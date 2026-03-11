@@ -13,8 +13,9 @@ standalone so you can isolate hardware issues before loading the
 full MPR Altitude Logger.
 
 Wiring expected (edit pins below if different):
-    BMP180:  SDA=GP0, SCL=GP1 (I2C0) — GY-68 breakout
+    BMP180:  SDA=GP4, SCL=GP5 (I2C0) — GY-68 breakout
     SD Card: MISO=GP16, MOSI=GP19, SCK=GP18, CS=GP17 (SPI0)
+    V_3V3:   GP28 (ADC2) direct — 3.3V rail
     V_5V:    GP26 (ADC0) through 1k/1k voltage divider
     V_9V:    GP27 (ADC1) through 2k/1k voltage divider
     LED:     GP25 (onboard)
@@ -23,15 +24,15 @@ Wiring expected (edit pins below if different):
 import time
 import struct
 import os
-from machine import Pin, I2C, SPI, ADC, PWM, freq
+from machine import Pin, I2C, SoftI2C, SPI, ADC, PWM, freq
 
 # ═══════════════════════════════════════════════════════════════
 #  EDIT THESE TO MATCH YOUR BOARD
 # ═══════════════════════════════════════════════════════════════
 
-I2C_SDA = 0           # GP0 — ALT-DTA
-I2C_SCL = 1           # GP1 — ALT-CLK
-I2C_FREQ = 400_000
+I2C_SDA = 4           # GP4 — ALT-DTA
+I2C_SCL = 5           # GP5 — ALT-CLK
+I2C_FREQ = 100_000    # 100kHz — conservative, bump to 400k once working
 BMP_ADDR = 0x77       # GY-68 default
 
 SPI_ID = 0
@@ -40,9 +41,11 @@ SPI_MOSI = 19         # GP19 — SD-SlaveIn
 SPI_MISO = 16         # GP16 — SD-SlaveOut
 SPI_CS = 17           # GP17 — SD-ChipSelect
 
+ADC_3V = 28           # GP28 (A2) — 3.3V rail (direct, no divider)
 ADC_5V = 26           # GP26 (A0) — 5V rail
 ADC_9V = 27           # GP27 (A1) — 9V rail
-VDIV_5V = 2.0         # 1k/1k divider
+VDIV_3V = 1.0         # direct — 3.3V within ADC range
+VDIV_5V = 2.0         # voltage divider — see schematic
 VDIV_9V = 3.0         # 2k/1k divider
 
 LED_PIN = 25
@@ -75,7 +78,7 @@ def test_led(led):
 def test_i2c():
     header("TEST 2: I2C Bus Scan")
     try:
-        i2c = I2C(0, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL), freq=I2C_FREQ)
+        i2c = SoftI2C(sda=Pin(I2C_SDA), scl=Pin(I2C_SCL), freq=I2C_FREQ)
         devices = i2c.scan()
 
         if not devices:
@@ -109,6 +112,8 @@ def test_barometer(i2c):
         return False
 
     try:
+        time.sleep_ms(50)
+
         # Check chip ID
         chip_id = i2c.readfrom_mem(BMP_ADDR, 0xD0, 1)[0]
         print(f"  Chip ID: 0x{chip_id:02X} (expected 0x55 for BMP180)")
@@ -186,9 +191,10 @@ def test_adc():
     header("TEST 4: ADC Voltage Readings")
     ok = True
 
-    for name, pin_num, divider in [
-        ("5V",   ADC_5V,   VDIV_5V),
-        ("9V",   ADC_9V,   VDIV_9V),
+    for name, pin_num, divider, lo, hi in [
+        ("3.3V", ADC_3V,   VDIV_3V, 3.0, 3.6),
+        ("5V",   ADC_5V,   VDIV_5V, 3.0, 7.0),
+        ("9V",   ADC_9V,   VDIV_9V, 5.0, 12.0),
     ]:
         try:
             adc = ADC(Pin(pin_num))
@@ -197,9 +203,7 @@ def test_adc():
             v_actual = v_adc * divider
 
             status = "[OK]"
-            if name == "5V" and (v_actual < 3.0 or v_actual > 7.0):
-                status = "[WARN] Out of range"
-            elif name == "9V" and (v_actual < 5.0 or v_actual > 12.0):
+            if v_actual < lo or v_actual > hi:
                 status = "[WARN] Out of range"
 
             print(f"  {name:5s} (GP{pin_num}): raw={raw:5d}  adc={v_adc:.3f}V  actual={v_actual:.2f}V  {status}")
@@ -280,7 +284,7 @@ def test_sd_card():
 def test_timing():
     header("TEST 6: Loop Timing")
     try:
-        i2c = I2C(0, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL), freq=I2C_FREQ)
+        i2c = SoftI2C(sda=Pin(I2C_SDA), scl=Pin(I2C_SCL), freq=I2C_FREQ)
 
         # Verify BMP180 is responsive
         try:

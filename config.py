@@ -5,11 +5,10 @@ Edit this file for your specific hardware setup.
 
 # ── Pin Assignments ──────────────────────────────────────────
 
-# Barometer (GY-68 BMP180 over I2C0)
-I2C_ID = 0
-I2C_SDA = 0        # GP0 — ALT-DTA
-I2C_SCL = 1        # GP1 — ALT-CLK
-I2C_FREQ = 400_000
+# Barometer (GY-68 BMP180 — SoftI2C, hardware I2C has EIO bug on this board)
+I2C_SDA = 4        # GP4 — ALT-DTA
+I2C_SCL = 5        # GP5 — ALT-CLK
+I2C_FREQ = 100_000
 BMP180_ADDR = 0x77  # GY-68 default address
 
 # SD Card (SPI0)
@@ -20,13 +19,15 @@ SPI_SCK = 18       # GP18 — SD-CLK
 SPI_CS = 17        # GP17 — SD-ChipSelect
 SPI_BAUD = 10_000_000  # 10 MHz
 
-# ADC — voltage dividers (1kΩ resistors, CF14JT1K00)
+# ADC — voltage monitoring
 ADC_V5 = 26        # GP26 (A0) — 5V rail, 1k/1k divider
 ADC_V9 = 27        # GP27 (A1) — 9V rail, 2k/1k divider
+ADC_V3 = 28        # GP28 (A2) — 3.3V rail, direct (no divider)
 VREF = 3.3
 ADC_RESOLUTION = 65535
 # Voltage divider ratios: V_actual = V_adc * ratio
-VDIV_5V = 2.0      # 1k/1k divider
+VDIV_3V = 1.0      # direct — 3.3V is within ADC range
+VDIV_5V = 2.0      # voltage divider — see schematic
 VDIV_9V = 3.0      # 2k/1k divider
 
 # Indicators

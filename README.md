@@ -27,7 +27,7 @@
 
 | Component       | Interface | Pico Pins              |
 |----------------|-----------|------------------------|
-| BMP280 Baro    | I2C0      | SDA=GP4, SCL=GP5       |
+| BMP180 Baro    | I2C0      | SDA=GP4, SCL=GP5       |
 | SD Card        | SPI1      | MISO=GP12, MOSI=GP11, SCK=GP10, CS=GP13 |
 | V_BATT ADC     | ADC0      | GP26                   |
 | V_5V ADC       | ADC1      | GP27                   |

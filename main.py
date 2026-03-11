@@ -18,7 +18,7 @@ Boot sequence:
 
 import time
 import struct
-from machine import I2C, Pin, freq
+from machine import SoftI2C, Pin, freq
 import _thread
 
 import config
@@ -130,8 +130,8 @@ def core0_main():
 
     # ── Init sensors ──────────────────────────────────
     print("[BOOT] Init barometer...")
-    i2c = I2C(config.I2C_ID, sda=Pin(config.I2C_SDA), scl=Pin(config.I2C_SCL),
-              freq=config.I2C_FREQ)
+    i2c = SoftI2C(sda=Pin(config.I2C_SDA), scl=Pin(config.I2C_SCL),
+                  freq=config.I2C_FREQ)
     baro = BMP180(i2c, config.BMP180_ADDR)
 
     print("[BOOT] Init power monitor...")
@@ -171,8 +171,8 @@ def core0_main():
     _thread.start_new_thread(core1_task, ())
 
     # ── Status ────────────────────────────────────────
-    batt_mv, v5_mv, v9_mv = power.read_all()
-    print(f"[PWR] BATT={batt_mv}mV  5V={v5_mv}mV  9V={v9_mv}mV")
+    v3_mv, v5_mv, v9_mv = power.read_all()
+    print(f"[PWR] 3V3={v3_mv}mV  5V={v5_mv}mV  9V={v9_mv}mV")
     print(f"[ARM] {'ARMED' if arm_switch.armed else 'DISARMED'}")
     print(f"\n[RDY] MPR Altitude Logger ready — {config.SAMPLE_RATE_HZ} Hz loop")
     print("[RDY] Waiting for launch...\n")
@@ -225,7 +225,7 @@ def core0_main():
             flags |= 0x04
 
         # ── Log to SD ────────────────────────────
-        v_batt = power.read_battery_mv()
+        v3, v5, v9 = power.read_all()
         logger.write_frame(
             timestamp_ms=now_ms,
             state=state,
@@ -234,7 +234,9 @@ def core0_main():
             alt_raw=alt_raw,
             alt_filtered=alt_filt,
             vel_filtered=vel_filt,
-            v_batt_mv=v_batt,
+            v_3v3_mv=v3,
+            v_5v_mv=v5,
+            v_9v_mv=v9,
             flags=flags,
         )
 
@@ -248,7 +250,7 @@ def core0_main():
                 f"[{STATE_NAMES[state]:7s}] "
                 f"alt={alt_filt:7.1f}m  vel={vel_filt:+6.1f}m/s  "
                 f"P={pressure:.0f}Pa  T={temperature:.1f}°C  "
-                f"batt={v_batt}mV  "
+                f"3V3={v3}mV  "
                 f"{'ARM' if arm_switch.armed else 'SAFE'}  "
                 f"{hz}Hz  #{logger.frames_written}"
             )

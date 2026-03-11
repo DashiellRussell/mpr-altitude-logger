@@ -16,14 +16,25 @@ from pathlib import Path
 
 
 FRAME_HEADER = b'\xAA\x55'
-FRAME_FORMAT = '<IB f f f f f H B'
+# Log format v2: 3 voltage rails instead of 1
+FRAME_FORMAT = '<IB f f f f f HHH B'
 FRAME_SIZE = struct.calcsize(FRAME_FORMAT)
 FILE_HEADER_SIZE = 10  # 6 magic + 2 version + 2 frame_size
+
+# v1 format for backwards compatibility
+FRAME_FORMAT_V1 = '<IB f f f f f H B'
+FRAME_SIZE_V1 = struct.calcsize(FRAME_FORMAT_V1)
 
 STATE_NAMES = {0: "PAD", 1: "BOOST", 2: "COAST", 3: "APOGEE",
                4: "DROGUE", 5: "MAIN", 6: "LANDED"}
 
 FIELD_NAMES = [
+    "timestamp_ms", "state", "pressure_pa", "temperature_c",
+    "alt_raw_m", "alt_filtered_m", "vel_filtered_ms",
+    "v_3v3_mv", "v_5v_mv", "v_9v_mv", "flags"
+]
+
+FIELD_NAMES_V1 = [
     "timestamp_ms", "state", "pressure_pa", "temperature_c",
     "alt_raw_m", "alt_filtered_m", "vel_filtered_ms",
     "v_batt_mv", "flags"
@@ -42,8 +53,9 @@ def decode_flags(flags):
 def decode_file(filepath):
     """Decode binary log file, yielding dicts per frame."""
     data = Path(filepath).read_bytes()
-    
-    # Validate header
+
+    # Validate header and detect version
+    version = 2
     if data[:6] != b'RKTLOG':
         print(f"Warning: missing file header, attempting raw decode")
         offset = 0
@@ -52,10 +64,16 @@ def decode_file(filepath):
         print(f"Log version: {version}, frame size: {fsize}")
         offset = FILE_HEADER_SIZE
 
+    # Select format based on version
+    if version >= 2:
+        fmt, fsize, fields = FRAME_FORMAT, FRAME_SIZE, FIELD_NAMES
+    else:
+        fmt, fsize, fields = FRAME_FORMAT_V1, FRAME_SIZE_V1, FIELD_NAMES_V1
+
     frames = []
     skipped = 0
 
-    while offset < len(data) - (2 + FRAME_SIZE):
+    while offset < len(data) - (2 + fsize):
         # Look for sync header
         if data[offset:offset+2] != FRAME_HEADER:
             offset += 1
@@ -64,13 +82,13 @@ def decode_file(filepath):
 
         offset += 2  # skip header bytes
 
-        if offset + FRAME_SIZE > len(data):
+        if offset + fsize > len(data):
             break
 
-        values = struct.unpack_from(FRAME_FORMAT, data, offset)
-        offset += FRAME_SIZE
+        values = struct.unpack_from(fmt, data, offset)
+        offset += fsize
 
-        frame = dict(zip(FIELD_NAMES, values))
+        frame = dict(zip(fields, values))
         frame["state_name"] = STATE_NAMES.get(frame["state"], "UNKNOWN")
         frame["flags_str"] = decode_flags(frame["flags"])
         frames.append(frame)
@@ -112,7 +130,6 @@ def plot_flight(frames):
     alt_filt = np.array([f["alt_filtered_m"] for f in frames])
     vel = np.array([f["vel_filtered_ms"] for f in frames])
     pressure = np.array([f["pressure_pa"] for f in frames])
-    batt = np.array([f["v_batt_mv"] for f in frames])
     states = np.array([f["state"] for f in frames])
 
     fig, axes = plt.subplots(4, 1, figsize=(14, 10), sharex=True)
@@ -147,10 +164,20 @@ def plot_flight(frames):
     ax.set_ylabel("Pressure (hPa)")
     ax.grid(True, alpha=0.3)
 
-    # Battery
+    # Power rails
     ax = axes[3]
-    ax.plot(t, batt / 1000, color="red")
-    ax.set_ylabel("Battery (V)")
+    if "v_3v3_mv" in frames[0]:
+        v3 = np.array([f["v_3v3_mv"] for f in frames])
+        v5 = np.array([f["v_5v_mv"] for f in frames])
+        v9 = np.array([f["v_9v_mv"] for f in frames])
+        ax.plot(t, v3 / 1000, color="green", label="3.3V")
+        ax.plot(t, v5 / 1000, color="orange", label="5V")
+        ax.plot(t, v9 / 1000, color="red", label="9V")
+        ax.legend()
+    else:
+        batt = np.array([f["v_batt_mv"] for f in frames])
+        ax.plot(t, batt / 1000, color="red", label="Battery")
+    ax.set_ylabel("Voltage (V)")
     ax.set_xlabel("Time (s)")
     ax.grid(True, alpha=0.3)
 
