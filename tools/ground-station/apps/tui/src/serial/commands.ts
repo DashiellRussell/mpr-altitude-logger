@@ -353,6 +353,9 @@ for name, pin, div, lo, hi in [('3V3', 28, 1.0, 3.0, 3.6), ('5V', 26, 2.0, 4.5, 
         print('{} Rail:FAIL:{}'.format(name, e))
 `;
 
+/** Soft reset: reboots Pico into main.py while keeping USB CDC alive */
+export const SOFT_RESET_CODE = 'import machine\nmachine.soft_reset()';
+
 /** Detailed ARM switch check */
 export const ARM_DETAIL_CODE = `\
 from machine import Pin

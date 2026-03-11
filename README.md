@@ -1,124 +1,158 @@
 # UNSW Rocketry — MPR Altitude Logger
 
-## Architecture
+Dual-core RP2040 avionics flight computer for AURC 2026. Logs barometric altitude, velocity, and power rail data at 25 Hz to SD card.
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   RP2040 Dual Core                   │
-│                                                     │
-│  ┌─────────────────┐    ┌─────────────────────────┐ │
-│  │     CORE 0      │    │        CORE 1           │ │
-│  │  Sensor Loop     │───▶  Flight Computer        │ │
-│  │  10-50 Hz        │    │  Kalman Filter          │ │
-│  │  SD Card Logger  │    │  State Machine          │ │
-│  │  Power Monitor   │    │  Apogee Detection       │ │
-│  │  LED Status      │    │  Deployment Trigger     │ │
-│  └─────────────────┘    └─────────────────────────┘ │
-│           │                        │                 │
-│           ▼                        ▼                 │
-│  ┌─────────────┐          ┌──────────────┐          │
-│  │  SD Card    │          │  Deploy GPIO │          │
-│  │  8GB SPI    │          │  (e-match)   │          │
-│  └─────────────┘          └──────────────┘          │
-└─────────────────────────────────────────────────────┘
-```
+## Quick Start
 
-## Hardware Connections
+### 1. Flash MicroPython
 
-| Component       | Interface | Pico Pins              |
-|----------------|-----------|------------------------|
-| BMP180 Baro    | I2C0      | SDA=GP4, SCL=GP5       |
-| SD Card        | SPI1      | MISO=GP12, MOSI=GP11, SCK=GP10, CS=GP13 |
-| V_BATT ADC     | ADC0      | GP26                   |
-| V_5V ADC       | ADC1      | GP27                   |
-| V_9V ADC       | ADC2      | GP28                   |
-| Deploy Channel | GPIO      | GP16 (active HIGH)     |
-| Status LED     | GPIO      | GP25 (onboard)         |
-| Buzzer         | GPIO      | GP17                   |
-| ARM Switch     | GPIO      | GP18 (pull-up, active LOW) |
+Flash MicroPython v1.22+ onto the Raspberry Pi Pico.
 
-## Flight States
-
-```
-PAD → BOOST → COAST → APOGEE → DROGUE → MAIN → LANDED
- │                      │
- └── ARM switch ────────┘ (deployment only if armed)
-```
-
-## Log Format
-
-Binary frames at 25 Hz, each frame = 28 bytes:
-- timestamp_ms   (u32)  — ms since boot
-- state          (u8)   — flight state enum
-- pressure_pa    (f32)  — raw barometer Pa
-- temperature_c  (f32)  — barometer temp °C
-- alt_raw_m      (f32)  — pressure-derived altitude
-- alt_filtered_m (f32)  — Kalman-filtered altitude
-- vel_filtered   (f32)  — Kalman-filtered vertical velocity m/s
-- v_batt_mv      (u16)  — battery voltage
-- flags          (u8)   — armed, deployed, error bits
-
-Post-flight conversion: `python3 tools/decode_log.py flight.bin > flight.csv`
-
-## First Boot — Hardware Check
-
-Before loading the full flight computer, verify your board works:
-
-1. Flash MicroPython onto Pico (v1.22+)
-2. Copy `hw_check.py` to Pico as `main.py`
-3. Open a serial monitor (Thonny / PuTTY / `screen /dev/ttyACM0 115200`)
-4. Reboot — the script tests every component and reports PASS/FAIL
-5. Fix any failures before proceeding
-
-## Loading the Flight Computer
-
-1. Copy the entire `avionics/` folder to Pico root
-2. Copy `main.py` to Pico root (overwrites hw_check)
-3. Ensure `sdcard.py` driver is on the Pico filesystem
-4. Board boots into flight computer automatically
-5. Flip ARM switch before launch (LED goes solid)
-6. After recovery, pull SD card and run decoder
-
-## OpenRocket Integration
-
-Export your simulation from OpenRocket, then convert it for the review dashboard:
-
-### Export from OpenRocket
-
-1. Open your `.ork` file → Flight Simulations → Run simulation
-2. Click **Plot / Export** → **Export data** tab
-3. Select fields: Time, Altitude, Vertical velocity, Vertical acceleration,
-   Mach number, Thrust, Drag force, Mass, Air pressure
-4. ☑ Include flight events in comments
-5. Separator: Comma → Export as `sim_export.csv`
-
-### Convert to dashboard format
+### 2. Hardware Check (first boot)
 
 ```bash
-# Basic conversion
+# Copy hw_check.py as main.py, reboot, check serial output
+mpremote cp hw_check.py :main.py
+mpremote reset
+```
+
+### 3. Load Flight Firmware
+
+```bash
+# Copy all avionics source files to Pico
+mpremote cp main.py config.py :
+mpremote mkdir sensors 2>/dev/null; mpremote cp sensors/barometer.py sensors/power.py :sensors/
+mpremote mkdir flight 2>/dev/null; mpremote cp flight/kalman.py flight/state_machine.py :flight/
+mpremote mkdir logging 2>/dev/null; mpremote cp logging/datalog.py logging/sdcard_mount.py :logging/
+mpremote mkdir utils 2>/dev/null; mpremote cp utils/hardware.py :utils/
+# Ensure sdcard.py driver is on the Pico filesystem
+```
+
+### 4. Ground Station TUI
+
+```bash
+cd tools/ground-station
+pnpm install    # first time only
+pnpm build      # first time or after code changes
+```
+
+**Preflight check** — connects to Pico, runs hardware checks, shows live telemetry:
+```bash
+pnpm dev:tui -- preflight
+# Or specify port:
+pnpm dev:tui -- preflight --port /dev/cu.usbmodem1101
+```
+
+Keyboard shortcuts in preflight:
+- `[B]` Boot Sequence — soft-resets Pico into main.py (requires GO status)
+- `[R]` Recalibrate ground pressure
+- `[T]` Re-run hardware checks
+- `[G]` Manual GO override
+- `[D]` Detailed hardware sub-checks
+- `[Q]` Quit
+
+**Postflight review** — decode binary flight log + charts:
+```bash
+pnpm dev:tui -- postflight flight.bin
+pnpm dev:tui -- postflight flight.bin --sim sim_predicted.csv
+```
+
+**Web dashboard** — browser-based flight review:
+```bash
+pnpm dev:web
+```
+
+### 5. Flight Simulation
+
+```bash
+# From OpenRocket export
 python tools/openrocket_import.py sim_export.csv -o sim_predicted.csv
 
-# Also extract rocket params (mass, impulse, etc)
-python tools/openrocket_import.py sim_export.csv --extract-params
+# Standalone sim (no OpenRocket needed)
+python tools/simulate.py --mass 2.5 --motor Cesaroni_H100 --cd 0.45 --diameter 0.054
 
 # Inspect a .eng motor file
 python tools/openrocket_import.py --eng-info path/to/motor.eng
 ```
 
-### Or run the built-in sim (if you don't have OpenRocket)
+### 6. Post-Flight Decode
 
 ```bash
-python tools/simulate.py --mass 2.5 --motor Cesaroni_H100 --cd 0.45 --diameter 0.054
+# Decode binary log to CSV + matplotlib plots
+python tools/decode_log.py flight.bin --plot
+
+# Then load flight.csv + sim_predicted.csv into the web dashboard
 ```
 
-### Review the flight
+## Architecture
 
-```bash
-# Decode actual flight data
-python tools/decode_log.py flight.bin
+```
+Core 0 (time-critical, 25 Hz):
+  Preflight checks → Sensor read → Kalman filter → State machine → SD card log
 
-# Open the dashboard (flight-review-dashboard.jsx)
-# Upload flight.csv as "Actual Flight"
-# Upload sim_predicted.csv as "Simulation"
-# Compare tab shows deviation analysis
+Core 1 (slower, ~20 Hz):
+  LED status patterns (blink = running, solid = error)
+```
+
+Flight states: `PAD → BOOST → COAST → APOGEE → DROGUE → MAIN → LANDED`
+
+## Hardware Connections
+
+| Component       | Interface | Pico Pins              |
+|----------------|-----------|------------------------|
+| BMP180 Baro    | I2C       | SDA=GP4, SCL=GP5       |
+| SD Card        | SPI0      | SCK=GP18, MOSI=GP19, MISO=GP16, CS=GP17 |
+| 3V3 ADC        | ADC       | GP28                   |
+| 5V ADC         | ADC       | GP26                   |
+| 9V ADC         | ADC       | GP27                   |
+| Status LED     | GPIO      | GP25 (onboard)         |
+| ARM Switch     | GPIO      | GP15 (pull-up, active LOW) |
+
+## Log Format
+
+Binary frames at 25 Hz. Each frame = 2 sync bytes + 32 data bytes:
+
+```
+Sync:  \xAA\x55
+Frame: u32 timestamp_ms | u8 state | f32 pressure_pa | f32 temperature_c |
+       f32 alt_raw_m | f32 alt_filtered_m | f32 vel_filtered_ms |
+       u16 v_3v3_mv | u16 v_5v_mv | u16 v_9v_mv | u8 flags
+```
+
+File header: `RKTLOG` (6B) + u16 version + u16 frame_size = 10 bytes.
+
+## LED Guide
+
+| Pattern        | Meaning                              |
+|---------------|--------------------------------------|
+| Slow blink 1s | Booting / preflight / PAD (ready)    |
+| Solid ON      | Error (check serial)                 |
+| Fast blink    | BOOST detected                       |
+| Medium blink  | COAST / descent                      |
+| Double flash  | APOGEE                               |
+| Triple flash  | LANDED — data saved                  |
+
+## Repository Structure
+
+```
+avionics firmware (Pico):
+  main.py              Entry point — dual-core orchestration
+  config.py            Pin assignments, thresholds, tuning constants
+  hw_check.py          Standalone first-boot hardware check
+  ground_test.py       Pre-flight integration test
+  sensors/             BMP180 driver, power rail monitor
+  flight/              Kalman filter, state machine
+  logging/             Binary frame logger, SD card mount
+  utils/               LED status patterns
+
+ground station (laptop):
+  tools/ground-station/
+    apps/tui/          Preflight + postflight TUI (Ink/React)
+    apps/web/          Web dashboard (Vite + Recharts)
+    packages/shared/   Binary decoder, analysis, shared types
+
+python tools (laptop):
+  tools/decode_log.py        Binary .bin → CSV + plots
+  tools/simulate.py          1D Euler flight sim
+  tools/openrocket_import.py OpenRocket CSV → dashboard format
 ```

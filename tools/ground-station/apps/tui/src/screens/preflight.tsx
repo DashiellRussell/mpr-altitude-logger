@@ -11,6 +11,7 @@ import { StatusDot } from '../components/status-dot.js';
 import { GoNogo } from '../components/go-nogo.js';
 import { VoltageBar } from '../components/voltage-bar.js';
 import { KeyBar } from '../components/key-bar.js';
+import { LedIndicator } from '../components/led-indicator.js';
 import {
   SYSINFO_CODE,
   I2C_SCAN_CODE,
@@ -33,8 +34,15 @@ interface Props {
   port?: string;
 }
 
-type Phase = 'connect' | 'checks' | 'live';
+type Phase = 'connect' | 'checks' | 'live' | 'booting';
 type CheckStatus = 'pending' | 'running' | 'pass' | 'fail' | 'skip';
+
+interface BootStep {
+  step: number;
+  label: string;
+  status: 'pending' | 'ok' | 'fail' | 'warn';
+  detail: string;
+}
 
 interface Check {
   name: string;
@@ -61,6 +69,18 @@ export function Preflight({ port }: Props) {
   const [manualGo, setManualGo] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
 
+  // ── Boot sequence state ─────────────────────────────────────
+  const BOOT_LABELS = ['Overclock', 'LED started', 'SD card', 'Barometer', 'Power rails', 'Calibrating', 'Logger open'];
+  const [bootSteps, setBootSteps] = useState<BootStep[]>([]);
+  const [bootReady, setBootReady] = useState(false);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [padTelemetry, setPadTelemetry] = useState<string | null>(null);
+  const [bootConfirm, setBootConfirm] = useState(false);
+  const [bootCountdown, setBootCountdown] = useState<number | null>(null);
+  const [bootDebugLines, setBootDebugLines] = useState<string[]>([]);
+  const [debugTick, setDebugTick] = useState(0);
+  const bootLineHandlerRef = useRef<((line: string) => void) | null>(null);
+
   // Sub-check results for the detail view
   interface SubCheck { name: string; status: 'PASS' | 'FAIL'; detail: string }
   interface DetailResult { subchecks: SubCheck[]; running: boolean; error?: string }
@@ -77,6 +97,102 @@ export function Preflight({ port }: Props) {
   const logCheck = (name: string, stdout: string, stderr: string) => {
     checkLogs.current[name] = { stdout, stderr, ts: Date.now() };
   };
+
+  // ── Boot sequence logic ──────────────────────────────────────
+  const triggerBoot = useCallback(async () => {
+    // Init 7 pending steps
+    const steps: BootStep[] = BOOT_LABELS.map((label, i) => ({
+      step: i + 1,
+      label,
+      status: 'pending' as const,
+      detail: '',
+    }));
+    setBootSteps(steps);
+    setBootReady(false);
+    setBootError(null);
+    setPadTelemetry(null);
+    setBootCountdown(null);
+    setPhase('booting');
+
+    // Line parser for main.py boot output
+    const handleBootLine = (line: string) => {
+      // Debug: capture last few lines so we can see what's arriving
+      setBootDebugLines((prev) => [...prev.slice(-9), line]);
+
+      // Match [N/7] step lines
+      const stepMatch = line.match(/^\[(\d)\/7\]\s+(.*)$/);
+      if (stepMatch) {
+        const num = parseInt(stepMatch[1]);
+        const rest = stepMatch[2];
+        const hasOk = /\bOK\b/.test(rest);
+        const hasFail = /\bFAIL\b/.test(rest);
+        const hasWarn = /\bWARN\b/.test(rest);
+        const status = hasFail ? 'fail' as const : hasWarn ? 'warn' as const : hasOk || num <= 2 ? 'ok' as const : 'ok' as const;
+        setBootSteps((prev) =>
+          prev.map((s) => s.step === num ? { ...s, status, detail: rest.trim() } : s)
+        );
+        return;
+      }
+
+      // Match [RDY]
+      if (line.includes('[RDY]')) {
+        setBootReady(true);
+        return;
+      }
+
+      // Match [FATAL]
+      if (line.includes('[FATAL]') || line.includes('FATAL')) {
+        setBootError(line);
+        return;
+      }
+
+      // Match PREFLIGHT FAILED
+      if (line.includes('PREFLIGHT FAILED')) {
+        setBootError('Preflight failed on board — check serial output');
+        return;
+      }
+
+      // Match countdown (N...)
+      const countdownMatch = line.match(/^\s*(\d+)\.\.\.$/);
+      if (countdownMatch) {
+        setBootCountdown(parseInt(countdownMatch[1]));
+        return;
+      }
+
+      // Match PAD telemetry line: [PAD     ] alt=...
+      if (line.match(/^\[(?:PAD|BOOST|COAST|APOGEE|DROGUE|MAIN|LANDED)\s*\]/)) {
+        setPadTelemetry(line.trim());
+        return;
+      }
+    };
+
+    // Register listener BEFORE reset so we don't miss early boot lines
+    bootLineHandlerRef.current = handleBootLine;
+    pico.onLine(handleBootLine);
+
+    try {
+      await pico.softReset();
+    } catch (e) {
+      setBootError(`Reset failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [pico]);
+
+  // Cleanup boot line listener on unmount only
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    return () => {
+      if (bootLineHandlerRef.current) {
+        pico.offLine(bootLineHandlerRef.current);
+      }
+    };
+  }, []);
+
+  // Debug ticker — force re-render every 500ms during boot to update debug counters
+  useEffect(() => {
+    if (phase !== 'booting') return;
+    const interval = setInterval(() => setDebugTick((t) => t + 1), 500);
+    return () => clearInterval(interval);
+  }, [phase]);
 
   // Parse "SubName:PASS:detail" lines from detailed check output
   const parseDetailOutput = (stdout: string): SubCheck[] => {
@@ -327,9 +443,31 @@ export function Preflight({ port }: Props) {
     }
   }, [pico.connected, phase, readSysinfo, runChecks]);
 
+  // ── GO status (computed early so key handler can use it) ────────
+  const allPassed = checks.every((c) => c.status === 'pass' || c.status === 'skip');
+  const isNaturalGo = allPassed && telemetry.voltagesOk && telemetry.baroSane && sdInfo.free > 10 && issues.length === 0;
+  const isGo = isNaturalGo || manualGo;
+
   // ── Key handling ─────────────────────────────────────────────────
   useInput((input, _key) => {
     if (input === 'q' || input === 'Q') exit();
+
+    // Boot sequence: requires GO (natural or manual override), two-press confirmation
+    if ((input === 'b' || input === 'B') && phase === 'live') {
+      if (!isGo) return; // silently ignore if NO-GO
+      if (bootConfirm) {
+        setBootConfirm(false);
+        triggerBoot();
+      } else {
+        setBootConfirm(true);
+      }
+      return;
+    }
+    // Any other key cancels boot confirmation
+    if (bootConfirm && phase === 'live') {
+      setBootConfirm(false);
+    }
+
     if ((input === 'r' || input === 'R') && showDetail && pico.connected) {
       setDetailResults({});
       runDetailedChecks();
@@ -343,7 +481,7 @@ export function Preflight({ port }: Props) {
     if ((input === 'g' || input === 'G') && phase === 'live') {
       setManualGo((prev) => !prev);
     }
-    if (input === 'd' || input === 'D') {
+    if ((input === 'd' || input === 'D') && phase !== 'booting') {
       setShowDetail((prev) => !prev);
     }
   });
@@ -450,6 +588,114 @@ export function Preflight({ port }: Props) {
         )}
 
         <KeyBar keys={[['D', 'Back to Dashboard'], ['R', 'Re-run Detailed'], ['Q', 'Quit']]} width={DASH_WIDTH} />
+      </Box>
+    );
+  }
+
+  // ── Booting phase view ──────────────────────────────────────
+  if (phase === 'booting') {
+    const ledState = bootError ? 'solid-error' as const
+      : bootReady ? 'solid-ready' as const
+      : 'blink' as const;
+
+    return (
+      <Box flexDirection="column" width={DASH_WIDTH + 2}>
+        <Header title="BOOT SEQUENCE" width={DASH_WIDTH} />
+
+        <Box flexDirection="row">
+          {/* Left: LED + Boot steps */}
+          <Box flexDirection="column" width={LEFT_W}>
+            <Panel title="ONBOARD LED" width={LEFT_W} borderColor={bootError ? 'red' : bootReady ? 'green' : 'yellow'}>
+              <LedIndicator state={ledState} />
+            </Panel>
+
+            <Text>{' '}</Text>
+
+            <Panel title="BOOT PROGRESS" width={LEFT_W} borderColor={bootError ? 'red' : bootReady ? 'green' : 'yellow'}>
+              {bootSteps.map((s) => (
+                <CheckItem
+                  key={s.step}
+                  name={`[${s.step}/7] ${s.label}`}
+                  status={s.status === 'ok' ? 'pass' : s.status === 'fail' ? 'fail' : s.status === 'warn' ? 'fail' : 'running'}
+                  detail={s.detail}
+                  maxWidth={LEFT_W - 2}
+                />
+              ))}
+            </Panel>
+          </Box>
+
+          <Box width={2}><Text>{'  '}</Text></Box>
+
+          {/* Right: Status banners + PAD telemetry */}
+          <Box flexDirection="column" width={RIGHT_W}>
+            {bootError && (
+              <Box flexDirection="column">
+                <Text backgroundColor="red" color="white" bold>
+                  {'  \u2717  BOOT ERROR  \u2717'.padEnd(RIGHT_W - 2)}
+                </Text>
+                <Text backgroundColor="red" color="white" bold>
+                  {`  ${bootError}`.slice(0, RIGHT_W - 2).padEnd(RIGHT_W - 2)}
+                </Text>
+                <Text>{' '}</Text>
+                <Text dimColor>  Board LED is solid ON. Power cycle to retry.</Text>
+              </Box>
+            )}
+
+            {bootCountdown !== null && !bootReady && !bootError && (
+              <Panel title="NON-FATAL ERROR" width={RIGHT_W} borderColor="yellow">
+                <Text color="yellow"> Proceeding in {bootCountdown} seconds...</Text>
+                <Text dimColor> Board encountered warnings but will continue.</Text>
+              </Panel>
+            )}
+
+            {!bootReady && !bootError && bootCountdown === null && (
+              <Panel title="BOOTING" width={RIGHT_W} borderColor="yellow">
+                <Text color="yellow"> <Spinner type="dots" /> Pico is rebooting into flight mode...</Text>
+                <Text>{' '}</Text>
+                <Text dimColor> Watching serial output from main.py.</Text>
+                <Text dimColor> Boot steps will appear as they complete.</Text>
+                <Text>{' '}</Text>
+                <Text dimColor> Lines: {bootDebugLines.length}  Events: {pico.link.debugDataEvents}  Bytes: {pico.link.debugBytesReceived}</Text>
+                <Text dimColor> Buf[{pico.link.debugLineBufferLen}]: {pico.link.debugLineBufferHead.slice(0, RIGHT_W - 12)}</Text>
+                {pico.link.debugPortError && (
+                  <Text color="red"> Port: {pico.link.debugPortError}</Text>
+                )}
+                {bootDebugLines.slice(-3).map((l, i) => (
+                  <Text key={i} dimColor> {l.slice(0, RIGHT_W - 4)}</Text>
+                ))}
+              </Panel>
+            )}
+
+            {bootReady && (
+              <>
+                <Box flexDirection="column">
+                  <Text backgroundColor="green" color="white" bold>
+                    {'  \u2605  READY FOR FLIGHT  \u2605'.padEnd(RIGHT_W - 2)}
+                  </Text>
+                  <Text backgroundColor="green" color="white" bold>
+                    {'  Board logging at 25Hz. Safe to disconnect USB.'.padEnd(RIGHT_W - 2)}
+                  </Text>
+                </Box>
+
+                <Text>{' '}</Text>
+
+                {padTelemetry && (
+                  <Panel title="PAD TELEMETRY (1 Hz)" width={RIGHT_W} borderColor="green">
+                    <Text> {padTelemetry}</Text>
+                  </Panel>
+                )}
+
+                {!padTelemetry && (
+                  <Panel title="PAD TELEMETRY" width={RIGHT_W} borderColor="green">
+                    <Text color="yellow"> <Spinner type="dots" /> Waiting for first PAD line...</Text>
+                  </Panel>
+                )}
+              </>
+            )}
+          </Box>
+        </Box>
+
+        <KeyBar keys={[['Q', 'Quit']]} width={DASH_WIDTH} />
       </Box>
     );
   }
@@ -637,10 +883,17 @@ export function Preflight({ port }: Props) {
         </Text>
       )}
 
+      {bootConfirm && phase === 'live' && (
+        <Text backgroundColor="yellow" color="black" bold>
+          {'  Press [B] again to start boot sequence. Any other key to cancel.'.padEnd(DASH_WIDTH)}
+        </Text>
+      )}
+
       <KeyBar
         keys={
           phase === 'live'
             ? [
+                ...(isGo ? [['B', 'Boot Sequence'] as [string, string]] : []),
                 ['R', 'Recalibrate'],
                 ['T', 'Re-test'],
                 ['G', manualGo ? 'Remove Override' : 'Manual GO Override'],

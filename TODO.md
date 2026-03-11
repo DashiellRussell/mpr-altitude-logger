@@ -8,14 +8,23 @@
 
 ## Software — Ground Station
 
-- [ ] **Rewrite TUIs in Ink (React for CLI)** — replace Python/rich `preflight.py` and `postflight.py` with interactive Ink-based TUIs
+- [x] **Rewrite TUIs in Ink (React for CLI)** — replace Python/rich `preflight.py` and `postflight.py` with interactive Ink-based TUIs
   - Full-page dashboard layout
   - Tabs, scrollable views, better keyboard handling
   - Shared serial communication layer (Node.js + node-serialport)
-- [ ] **Web dashboard** — browser-based flight review UI so team members can view data without CLI
+- [x] **Web dashboard** — browser-based flight review UI so team members can view data without CLI
   - Post-flight analysis with interactive charts (actual vs simulated overlay)
   - Could share components with Ink TUI
-- [ ] Decide on monorepo structure for Ink TUI + web dashboard (e.g. `tools/ground-station/`)
+- [x] Decide on monorepo structure for Ink TUI + web dashboard (e.g. `tools/ground-station/`)
+- [ ] **Boot sequence TUI** — press [B] in preflight to soft-reset Pico into main.py and watch boot steps stream in
+  - [x] PicoLink passthrough mode (line-reading after soft reset)
+  - [x] Boot step parser ([1/7]...[7/7], [RDY], [PAD] telemetry)
+  - [x] LED indicator component (blink/solid-error/solid-ready)
+  - [x] Two-press [B] confirmation, GO-gated
+  - [ ] Remove debug diagnostics (lineBuffer dump, byte counters) once boot sequence is stable
+  - [ ] Test with actual flight firmware on Pico (all avionics source files must be on the Pico filesystem)
+  - [ ] Handle `machine.soft_reset()` USB re-enumeration on different MicroPython builds (currently uses Ctrl-B → type command at >>> prompt)
+  - [ ] Verify main.py boot output is parseable when SD card or barometer fails (FATAL path, countdown path)
 
 ## Software — Firmware
 
