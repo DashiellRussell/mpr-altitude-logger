@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "name": "mpr-ground-station",
+  "scripts": {
+    "dev:tui": "pnpm --filter @mpr/tui dev",
+    "dev:web": "pnpm --filter @mpr/web dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "test:shared": "pnpm --filter @mpr/shared test"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

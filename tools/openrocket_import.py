@@ -54,6 +54,8 @@ import json
 import sys
 import re
 import argparse
+import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -510,12 +512,205 @@ def print_eng_info(motor):
     print(f"{'═' * 50}\n")
 
 
+def parse_ork_file(filepath, sim_index=0):
+    """
+    Parse an OpenRocket .ork file directly (ZIP-compressed XML).
+
+    Extracts simulation data without needing to manually export CSV from
+    OpenRocket. The .ork file contains full sim results if the sim was run
+    before saving.
+
+    Args:
+        filepath: Path to .ork file
+        sim_index: Which simulation to extract (0-based). Use -1 to list all.
+
+    Returns:
+        (data_rows, events, metadata) — same format as parse_openrocket_csv()
+    """
+    # .ork is a ZIP containing rocket.ork (XML)
+    with zipfile.ZipFile(filepath, 'r') as zf:
+        # Find the XML file inside
+        names = zf.namelist()
+        xml_name = None
+        for n in names:
+            if n.endswith('.ork'):
+                xml_name = n
+                break
+        if xml_name is None:
+            # Some .ork files have the XML at the top level
+            xml_name = names[0]
+
+        xml_data = zf.read(xml_name).decode('utf-8')
+
+    root = ET.fromstring(xml_data)
+
+    # Find all simulations
+    sims = root.findall('.//simulation')
+    if not sims:
+        raise ValueError("No simulations found in .ork file. Run the sim in OpenRocket first.")
+
+    if sim_index == -1:
+        # List mode
+        print(f"\nFound {len(sims)} simulation(s) in {filepath}:")
+        for i, sim in enumerate(sims):
+            name = sim.findtext('name', f'Sim {i}')
+            fd = sim.find('.//flightdata')
+            status = sim.get('status', 'unknown')
+            if fd is not None:
+                apogee = fd.get('maxaltitude', '?')
+                max_v = fd.get('maxvelocity', '?')
+                print(f"  [{i}] \"{name}\" (status={status}) — apogee={apogee}m, max_v={max_v}m/s")
+            else:
+                print(f"  [{i}] \"{name}\" (status={status}) — no flight data")
+        return None, None, None
+
+    if sim_index >= len(sims):
+        raise ValueError(f"Sim index {sim_index} out of range (file has {len(sims)} sims)")
+
+    sim = sims[sim_index]
+    sim_name = sim.findtext('name', f'Sim {sim_index}')
+
+    fd = sim.find('.//flightdata')
+    if fd is None:
+        raise ValueError(f"Simulation \"{sim_name}\" has no flight data. Run it in OpenRocket first.")
+
+    # Parse the column types from the databranch
+    db = fd.find('databranch')
+    if db is None:
+        raise ValueError(f"No databranch in simulation \"{sim_name}\"")
+
+    types_str = db.get('types', '')
+    col_names = [t.strip() for t in types_str.split(',')]
+
+    # Map OpenRocket XML column names → our field names
+    # These are the raw names from the types attribute (no units, lowercase-ish)
+    ork_xml_map = {
+        "Time": "time_s",
+        "Altitude": "altitude_m",
+        "Altitude above sea level": "altitude_asl_m",
+        "Vertical velocity": "velocity_ms",
+        "Total velocity": "total_velocity_ms",
+        "Vertical acceleration": "acceleration_ms2",
+        "Total acceleration": "total_acceleration_ms2",
+        "Lateral velocity": "lateral_velocity_ms",
+        "Lateral distance": "lateral_distance_m",
+        "Lateral direction": "lateral_direction_deg",
+        "Position East of launch": "pos_east_m",
+        "Position North of launch": "pos_north_m",
+        "Angle of attack": "aoa_deg",
+        "Mass": "mass_kg",
+        "Motor mass": "motor_mass_kg",
+        "Thrust": "thrust_N",
+        "Drag force": "drag_N",
+        "Drag coefficient": "cd",
+        "Normal force coefficient": "cn",
+        "Stability margin calibers": "stability_cal",
+        "CP location": "cp_m",
+        "CG location": "cg_m",
+        "Mach number": "mach",
+        "Air pressure": "pressure_pa",
+        "Air temperature": "temperature_c",
+        "Air density": "air_density",
+        "Speed of sound": "speed_of_sound",
+        "Wind velocity": "wind_speed_ms",
+        "Wind direction": "wind_direction_deg",
+        "Gravitational acceleration": "gravity_ms2",
+        "Roll rate": "roll_rate",
+        "Pitch rate": "pitch_rate",
+        "Yaw rate": "yaw_rate",
+        "Vertical orientation (zenith)": "zenith_rad",
+        "Lateral orientation (azimuth)": "azimuth_rad",
+        "Thrust-to-weight ratio": "twr",
+        "Reynolds number": "reynolds",
+        "Simulation time step": "dt",
+        "Reference length": "ref_length_m",
+        "Reference area": "ref_area_m2",
+    }
+
+    field_indices = {}  # index → our_field_name
+    for i, col in enumerate(col_names):
+        mapped = ork_xml_map.get(col)
+        if mapped:
+            field_indices[i] = mapped
+
+    # Parse events
+    events = []
+    event_type_map = {
+        "launch": "LAUNCH",
+        "ignition": "IGNITION",
+        "liftoff": "LIFTOFF",
+        "launchrod": "LAUNCHROD",
+        "burnout": "BURNOUT",
+        "apogee": "APOGEE",
+        "ejectioncharge": "EJECTION_CHARGE",
+        "recoverydevicedeployment": "RECOVERY_DEVICE_DEPLOYMENT",
+        "groundhit": "GROUND_HIT",
+        "simulationend": "SIMULATION_END",
+        "tumble": "TUMBLE",
+    }
+    for ev_elem in fd.findall('.//event'):
+        ev_type = event_type_map.get(ev_elem.get('type', ''), ev_elem.get('type', '').upper())
+        ev_time = float(ev_elem.get('time', 0))
+        events.append({"event": ev_type, "time_s": ev_time})
+
+    # Parse datapoints
+    rows = []
+    for dp in db.findall('datapoint'):
+        values = dp.text.strip().split(',')
+        row = {}
+        for i, field in field_indices.items():
+            if i < len(values):
+                val = values[i].strip()
+                if val == 'NaN' or val == '':
+                    row[field] = None
+                else:
+                    try:
+                        row[field] = float(val)
+                    except ValueError:
+                        row[field] = None
+        rows.append(row)
+
+    # Air temperature in the XML is in Kelvin — convert to Celsius
+    for row in rows:
+        if row.get("temperature_c") is not None:
+            row["temperature_c"] -= 273.15
+
+    # Air pressure in the XML is in Pa — already correct
+
+    # Assign flight states
+    rows = assign_states(rows, events)
+
+    # Summary from flightdata attributes
+    metadata = {
+        "source": str(filepath),
+        "sim_name": sim_name,
+        "sim_index": sim_index,
+        "columns_found": list(set(field_indices.values())),
+        "columns_raw": col_names,
+        "n_events": len(events),
+        "n_rows": len(rows),
+        "max_altitude_m": float(fd.get('maxaltitude', 0)),
+        "max_velocity_ms": float(fd.get('maxvelocity', 0)),
+        "max_acceleration_ms2": float(fd.get('maxacceleration', 0)),
+        "max_mach": float(fd.get('maxmach', 0)),
+        "time_to_apogee_s": float(fd.get('timetoapogee', 0)),
+        "flight_time_s": float(fd.get('flighttime', 0)),
+        "ground_hit_velocity_ms": float(fd.get('groundhitvelocity', 0)),
+        "launch_rod_velocity_ms": float(fd.get('launchrodvelocity', 0)),
+    }
+
+    return rows, events, metadata
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Import OpenRocket simulation data for flight review",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  %(prog)s rocket.ork                          → extract sim from .ork directly
+  %(prog)s rocket.ork --sim 2                  → extract 3rd simulation
+  %(prog)s rocket.ork --list-sims              → list all sims in .ork file
   %(prog)s sim_export.csv                      → sim_predicted.csv
   %(prog)s sim_export.csv -o my_sim.csv        → my_sim.csv
   %(prog)s sim_export.csv --json               → also outputs .json
@@ -523,9 +718,13 @@ Examples:
   %(prog)s --eng-info Cesaroni_H100.eng        → print motor stats
         """
     )
-    parser.add_argument("csvfile", nargs="?", help="OpenRocket CSV export file")
+    parser.add_argument("infile", nargs="?", help="OpenRocket .ork file or CSV export")
     parser.add_argument("-o", "--output", default="sim_predicted.csv",
                        help="Output CSV path (default: sim_predicted.csv)")
+    parser.add_argument("--sim", type=int, default=0,
+                       help="Simulation index to extract from .ork file (default: 0)")
+    parser.add_argument("--list-sims", action="store_true",
+                       help="List all simulations in .ork file")
     parser.add_argument("--json", action="store_true",
                        help="Also output JSON")
     parser.add_argument("--extract-params", action="store_true",
@@ -540,15 +739,41 @@ Examples:
         print_eng_info(motor)
         return
 
-    if not args.csvfile:
-        parser.error("Provide an OpenRocket CSV file (or use --eng-info)")
+    if not args.infile:
+        parser.error("Provide an OpenRocket .ork or CSV file (or use --eng-info)")
 
-    print(f"Parsing: {args.csvfile}")
-    rows, events, meta = parse_openrocket_csv(args.csvfile)
+    is_ork = args.infile.lower().endswith('.ork')
 
+    # List sims mode
+    if args.list_sims:
+        if not is_ork:
+            parser.error("--list-sims only works with .ork files")
+        parse_ork_file(args.infile, sim_index=-1)
+        return
+
+    # Parse input
+    if is_ork:
+        print(f"Parsing .ork: {args.infile} (sim index {args.sim})")
+        rows, events, meta = parse_ork_file(args.infile, sim_index=args.sim)
+    else:
+        print(f"Parsing CSV: {args.infile}")
+        rows, events, meta = parse_openrocket_csv(args.infile)
+
+    print(f"  Sim: {meta.get('sim_name', 'N/A')}")
     print(f"  Rows: {meta['n_rows']}")
     print(f"  Columns: {', '.join(meta['columns_found'])}")
     print(f"  Events: {meta['n_events']}")
+
+    # Print .ork summary stats if available
+    if is_ork:
+        print(f"\n  Flight summary:")
+        print(f"    Apogee:           {meta['max_altitude_m']:.1f} m ({meta['max_altitude_m'] * 3.281:.0f} ft)")
+        print(f"    Max velocity:     {meta['max_velocity_ms']:.1f} m/s (Mach {meta['max_mach']:.3f})")
+        print(f"    Max acceleration: {meta['max_acceleration_ms2']:.1f} m/s² ({meta['max_acceleration_ms2'] / 9.81:.1f} G)")
+        print(f"    Time to apogee:   {meta['time_to_apogee_s']:.2f} s")
+        print(f"    Flight time:      {meta['flight_time_s']:.1f} s")
+        print(f"    Landing velocity: {meta['ground_hit_velocity_ms']:.1f} m/s")
+        print(f"    Rod departure:    {meta['launch_rod_velocity_ms']:.1f} m/s")
 
     if events:
         print("\n  Flight events:")
