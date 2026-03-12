@@ -19,7 +19,7 @@ def mount():
     try:
         spi = SPI(
             config.SPI_ID,
-            baudrate=config.SPI_BAUD,
+            baudrate=1_000_000,  # Init at 1 MHz — SD cards require slow clock for init
             polarity=0,
             phase=0,
             sck=Pin(config.SPI_SCK),
@@ -28,6 +28,15 @@ def mount():
         )
         cs = Pin(config.SPI_CS, Pin.OUT, value=1)
         _sd = sdcard.SDCard(spi, cs)
+        # Ramp up to configured speed for data transfer
+        spi.init(
+            baudrate=config.SPI_BAUD,
+            polarity=0,
+            phase=0,
+            sck=Pin(config.SPI_SCK),
+            mosi=Pin(config.SPI_MOSI),
+            miso=Pin(config.SPI_MISO),
+        )
         _vfs = os.VfsFat(_sd)
         os.mount(_vfs, "/sd")
         return True
@@ -63,3 +72,11 @@ def free_space_mb():
         return (stat[0] * stat[3]) / (1024 * 1024)
     except:
         return -1
+
+
+def sync():
+    """Force FAT metadata to disk. Falls back to no-op if unavailable."""
+    try:
+        os.sync()
+    except AttributeError:
+        pass

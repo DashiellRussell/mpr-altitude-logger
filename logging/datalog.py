@@ -35,6 +35,21 @@ def _try_sync():
         pass  # MicroPython build without os.sync() — flush-only fallback
 
 
+def next_log_filename(base_path):
+    """Predict the next auto-incremented log filename without opening it."""
+    base = base_path.rsplit('.', 1)[0]
+    ext = base_path.rsplit('.', 1)[1] if '.' in base_path else 'bin'
+    fname = f"{base}.{ext}"
+    idx = 1
+    while True:
+        try:
+            os.stat(fname)
+            fname = f"{base}_{idx:03d}.{ext}"
+            idx += 1
+        except OSError:
+            return fname
+
+
 class FlightLogger:
     """Writes binary telemetry frames to SD card."""
 

@@ -92,8 +92,9 @@ with open('/sd/_test.tmp', 'wb') as f:
 with open('/sd/_test.tmp', 'rb') as f:
     d = f.read()
 os.remove('/sd/_test.tmp')
+logs = [f for f in os.listdir('/sd') if f.endswith('.bin')]
 os.umount('/sd')
-print('{},{},{}'.format(total, free, d == b'OK'))
+print('{},{},{},{}'.format(total, free, d == b'OK', '|'.join(sorted(logs))))
 """
 
 ADC_CHECK_CODE = """\
@@ -102,15 +103,6 @@ a3 = ADC(Pin(28)).read_u16()
 a5 = ADC(Pin(26)).read_u16()
 a9 = ADC(Pin(27)).read_u16()
 print('{},{},{}'.format(a3, a5, a9))
-"""
-
-ARM_CHECK_CODE = """\
-from machine import Pin
-try:
-    arm = Pin(15, Pin.IN, Pin.PULL_UP)
-    print(arm.value())
-except Exception as e:
-    print('ERR:{}'.format(e))
 """
 
 INIT_CODE = r"""
@@ -370,10 +362,10 @@ class PreflightTUI:
             make_check("Barometer"),
             make_check("SD Card"),
             make_check("Voltages"),
-            make_check("ARM Switch"),
         ]
         self.sd_total = 0
         self.sd_free = 0
+        self.next_log = ""
 
         # Telemetry state
         self.pressure = 0.0
@@ -388,7 +380,6 @@ class PreflightTUI:
         self.alt_history = deque(maxlen=SPARKLINE_LEN)
         self.prev_alt = None
         self.prev_time = None
-        self.arm_status = "UNKNOWN"
         self.sensors_inited = False
 
         # UI
@@ -449,7 +440,6 @@ class PreflightTUI:
         self._check_barometer()
         self._check_sd()
         self._check_adc()
-        self._check_arm()
 
         self.phase = "live"
 
@@ -510,15 +500,24 @@ class PreflightTUI:
                 chk["detail"] = stderr
                 self.issues.append("SD card check failed")
                 return
-            parts = stdout.strip().split(',')
+            parts = stdout.strip().split(',', 3)
             total = int(parts[0])
             free = int(parts[1])
             write_ok = parts[2].strip() == 'True'
+            existing_logs = [f for f in parts[3].split('|') if f] if len(parts) > 3 else []
             self.sd_total = total
             self.sd_free = free
+            # Predict next log filename (same logic as datalog.py)
+            base, ext = "flight", "bin"
+            candidate = f"{base}.{ext}"
+            idx = 1
+            while candidate in existing_logs:
+                candidate = f"{base}_{idx:03d}.{ext}"
+                idx += 1
+            self.next_log = f"/sd/{candidate}"
             if write_ok and free > 10:
                 chk["status"] = "pass"
-                chk["detail"] = f"{total} MB total, {free} MB free"
+                chk["detail"] = f"{total} MB total, {free} MB free → {self.next_log}"
             elif not write_ok:
                 chk["status"] = "fail"
                 chk["detail"] = "Write/read verification failed"
@@ -568,34 +567,6 @@ class PreflightTUI:
             chk["status"] = "fail"
             chk["detail"] = str(e)
             self.issues.append("ADC check error")
-
-    def _check_arm(self):
-        chk = self._get_check("ARM Switch")
-        chk["status"] = "running"
-        try:
-            stdout, stderr = self.link.exec_raw(ARM_CHECK_CODE, timeout=5.0)
-            if stderr:
-                chk["status"] = "skip"
-                chk["detail"] = "ARM pin not available"
-                return
-            val = stdout.strip()
-            if val.startswith("ERR:"):
-                chk["status"] = "skip"
-                chk["detail"] = "ARM pin not configured"
-                return
-            pin_val = int(val)
-            # Active LOW with pull-up: 1=SAFE (open), 0=ARMED (closed)
-            if pin_val == 1:
-                self.arm_status = "SAFE"
-                chk["status"] = "pass"
-                chk["detail"] = "Switch is OPEN"
-            else:
-                self.arm_status = "ARMED"
-                chk["status"] = "pass"
-                chk["detail"] = "Switch is CLOSED"
-        except Exception as e:
-            chk["status"] = "skip"
-            chk["detail"] = str(e)
 
     # -- Init sensors & calibrate for live monitoring ------------------------
 
@@ -741,12 +712,6 @@ class PreflightTUI:
         for c in self.checks:
             icon = self._check_icon(c["status"])
             detail = f"  {c['detail']}" if c["detail"] else ""
-            # Special display for ARM switch
-            if c["name"] == "ARM Switch" and c["status"] == "pass":
-                if self.arm_status == "ARMED":
-                    icon = "[red bold][ARMED][/red bold]"
-                else:
-                    icon = "[green][SAFE][/green] "
             lines.append(f"  {c['name']:<12s} {icon}{detail}")
         lines.append("")
 
@@ -791,14 +756,14 @@ class PreflightTUI:
             if go and not self.issues:
                 npass = sum(1 for c in self.checks if c["status"] in ("pass", "skip"))
                 lines.append(
-                    "  [on green][bold white]"
+                    "  [on green][bold black]"
                     "  \u2605  GO FOR LAUNCH  \u2605                              "
-                    "[/bold white][/on green]"
+                    "[/bold black][/on green]"
                 )
                 lines.append(
-                    f"  [on green][bold white]"
+                    f"  [on green][bold black]"
                     f"  All {npass} checks passed  \u2022  Systems nominal              "
-                    f"[/bold white][/on green]"
+                    f"[/bold black][/on green]"
                 )
             else:
                 reasons = list(self.issues)
@@ -817,14 +782,14 @@ class PreflightTUI:
                         unique.append(r)
                 reason_str = "; ".join(unique[:3]) if unique else "Check failures"
                 lines.append(
-                    "  [on red][bold white]"
+                    "  [on red][bold black]"
                     "  \u2717  NO-GO  \u2717                                        "
-                    "[/bold white][/on red]"
+                    "[/bold black][/on red]"
                 )
                 lines.append(
-                    f"  [on red][bold white]"
+                    f"  [on red][bold black]"
                     f"  {reason_str:<52s}"
-                    f"[/bold white][/on red]"
+                    f"[/bold black][/on red]"
                 )
             lines.append("")
 
@@ -916,8 +881,6 @@ def main():
             tui._check_sd()
             live.update(tui.render())
             tui._check_adc()
-            live.update(tui.render())
-            tui._check_arm()
             live.update(tui.render())
 
             tui.phase = "live"

@@ -28,6 +28,12 @@ mpremote mkdir utils 2>/dev/null; mpremote cp utils/hardware.py :utils/
 # Ensure sdcard.py driver is on the Pico filesystem
 ```
 
+To update individual files after changes:
+```bash
+python3 -m mpremote connect /dev/cu.usbmodem11301 cp main.py :main.py
+python3 -m mpremote connect /dev/cu.usbmodem11301 reset
+```
+
 ### 4. Ground Station TUI
 
 ```bash
@@ -106,7 +112,6 @@ Flight states: `PAD → BOOST → COAST → APOGEE → DROGUE → MAIN → LANDE
 | 5V ADC         | ADC       | GP26                   |
 | 9V ADC         | ADC       | GP27                   |
 | Status LED     | GPIO      | GP25 (onboard)         |
-| ARM Switch     | GPIO      | GP15 (pull-up, active LOW) |
 
 ## Log Format
 
@@ -123,14 +128,15 @@ File header: `RKTLOG` (6B) + u16 version + u16 frame_size = 10 bytes.
 
 ## LED Guide
 
-| Pattern        | Meaning                              |
-|---------------|--------------------------------------|
-| Slow blink 1s | Booting / preflight / PAD (ready)    |
-| Solid ON      | Error (check serial)                 |
-| Fast blink    | BOOST detected                       |
-| Medium blink  | COAST / descent                      |
-| Double flash  | APOGEE                               |
-| Triple flash  | LANDED — data saved                  |
+| Pattern            | Meaning                              |
+|-------------------|--------------------------------------|
+| Fast blink 250ms  | Preflight running                    |
+| Slow blink 1s     | PAD — ready, safe to disconnect USB  |
+| Solid ON          | Error (SD card lost, check serial)   |
+| Fast blink 50ms   | BOOST detected                       |
+| Medium blink      | COAST / descent                      |
+| Double flash      | APOGEE                               |
+| Triple flash      | LANDED — data saved                  |
 
 ## Repository Structure
 
