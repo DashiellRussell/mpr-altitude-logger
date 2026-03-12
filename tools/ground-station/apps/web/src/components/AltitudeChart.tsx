@@ -25,6 +25,7 @@ interface AltitudeChartProps {
   frames: FlightFrame[];
   simSummary?: SimSummary;
   transitions: StateTransition[];
+  cursorTime?: number;
 }
 
 interface ChartPoint {
@@ -34,7 +35,7 @@ interface ChartPoint {
   sim?: number;
 }
 
-export function AltitudeChart({ frames, simSummary, transitions }: AltitudeChartProps) {
+export function AltitudeChart({ frames, simSummary, transitions, cursorTime }: AltitudeChartProps) {
   const data = useMemo(() => {
     if (!frames.length) return [];
     const t0 = frames[0].timestamp_ms;
@@ -45,27 +46,32 @@ export function AltitudeChart({ frames, simSummary, transitions }: AltitudeChart
       raw: parseFloat(f.alt_raw_m.toFixed(2)),
     }));
 
-    // Overlay sim data by interpolation
+    // Overlay sim data — align sim T=0 to launch (BOOST) in the log
     if (simSummary && simSummary.times.length > 1) {
       const simTimes = simSummary.times;
       const simAlts = simSummary.altitudes;
 
+      // Find launch offset: time of first BOOST transition
+      const boostTransition = transitions.find((tr) => tr.to_state === 'BOOST');
+      const launchOffset = boostTransition ? boostTransition.time : 0;
+
       for (const point of points) {
-        const t = point.time;
-        if (t < simTimes[0] || t > simTimes[simTimes.length - 1]) continue;
+        // Sim time relative to log time
+        const simT = point.time - launchOffset;
+        if (simT < simTimes[0] || simT > simTimes[simTimes.length - 1]) continue;
 
         // Binary search for bracket
         let lo = 0;
         let hi = simTimes.length - 1;
         while (lo < hi - 1) {
           const mid = (lo + hi) >> 1;
-          if (simTimes[mid] <= t) lo = mid;
+          if (simTimes[mid] <= simT) lo = mid;
           else hi = mid;
         }
         // Linear interpolation
         const dt = simTimes[hi] - simTimes[lo];
         if (dt > 0) {
-          const frac = (t - simTimes[lo]) / dt;
+          const frac = (simT - simTimes[lo]) / dt;
           point.sim = parseFloat((simAlts[lo] + frac * (simAlts[hi] - simAlts[lo])).toFixed(2));
         }
       }
@@ -140,6 +146,15 @@ export function AltitudeChart({ frames, simSummary, transitions }: AltitudeChart
             dot={false}
             name="Simulation"
             connectNulls={false}
+          />
+        )}
+
+        {cursorTime !== undefined && (
+          <ReferenceLine
+            x={parseFloat(cursorTime.toFixed(3))}
+            stroke="#ffffff"
+            strokeWidth={1.5}
+            label={{ value: `T+${cursorTime.toFixed(1)}s`, position: 'top', fill: '#fff', fontSize: 10 }}
           />
         )}
       </LineChart>

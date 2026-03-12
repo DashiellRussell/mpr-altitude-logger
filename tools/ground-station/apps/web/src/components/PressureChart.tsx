@@ -7,15 +7,17 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
+  ReferenceLine,
   ResponsiveContainer,
 } from 'recharts';
 import type { FlightFrame } from '@mpr/shared';
 
 interface PressureChartProps {
   frames: FlightFrame[];
+  cursorTime?: number;
 }
 
-export function PressureChart({ frames }: PressureChartProps) {
+export function PressureChart({ frames, cursorTime }: PressureChartProps) {
   const data = useMemo(() => {
     if (!frames.length) return [];
     const t0 = frames[0].timestamp_ms;
@@ -56,6 +58,14 @@ export function PressureChart({ frames }: PressureChartProps) {
           dot={false}
           name="Pressure (hPa)"
         />
+
+        {cursorTime !== undefined && (
+          <ReferenceLine
+            x={parseFloat(cursorTime.toFixed(3))}
+            stroke="#ffffff"
+            strokeWidth={1.5}
+          />
+        )}
       </LineChart>
     </ResponsiveContainer>
   );

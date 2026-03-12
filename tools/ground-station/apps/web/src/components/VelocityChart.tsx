@@ -10,7 +10,7 @@ import {
   ReferenceLine,
   ResponsiveContainer,
 } from 'recharts';
-import type { FlightFrame, StateTransition } from '@mpr/shared';
+import type { FlightFrame, SimSummary, StateTransition } from '@mpr/shared';
 
 const STATE_TRANSITION_COLORS: Record<string, string> = {
   BOOST: '#ff4444',
@@ -24,17 +24,48 @@ const STATE_TRANSITION_COLORS: Record<string, string> = {
 interface VelocityChartProps {
   frames: FlightFrame[];
   transitions: StateTransition[];
+  simSummary?: SimSummary;
+  cursorTime?: number;
 }
 
-export function VelocityChart({ frames, transitions }: VelocityChartProps) {
+export function VelocityChart({ frames, transitions, simSummary, cursorTime }: VelocityChartProps) {
   const data = useMemo(() => {
     if (!frames.length) return [];
     const t0 = frames[0].timestamp_ms;
-    return frames.map((f) => ({
+    const points = frames.map((f) => ({
       time: parseFloat(((f.timestamp_ms - t0) / 1000).toFixed(3)),
       velocity: parseFloat(f.vel_filtered_ms.toFixed(2)),
+      sim: undefined as number | undefined,
     }));
-  }, [frames]);
+
+    // Align sim T=0 to launch (BOOST) in the log
+    if (simSummary && simSummary.times.length > 1) {
+      const simTimes = simSummary.times;
+      const simVels = simSummary.velocities;
+
+      const boostTransition = transitions.find((tr) => tr.to_state === 'BOOST');
+      const launchOffset = boostTransition ? boostTransition.time : 0;
+
+      for (const point of points) {
+        const simT = point.time - launchOffset;
+        if (simT < simTimes[0] || simT > simTimes[simTimes.length - 1]) continue;
+        let lo = 0;
+        let hi = simTimes.length - 1;
+        while (lo < hi - 1) {
+          const mid = (lo + hi) >> 1;
+          if (simTimes[mid] <= simT) lo = mid;
+          else hi = mid;
+        }
+        const dt = simTimes[hi] - simTimes[lo];
+        if (dt > 0) {
+          const frac = (simT - simTimes[lo]) / dt;
+          point.sim = parseFloat((simVels[lo] + frac * (simVels[hi] - simVels[lo])).toFixed(2));
+        }
+      }
+    }
+
+    return points;
+  }, [frames, simSummary]);
 
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -77,6 +108,26 @@ export function VelocityChart({ frames, transitions }: VelocityChartProps) {
           dot={false}
           name="Filtered Velocity"
         />
+        {simSummary && (
+          <Line
+            type="monotone"
+            dataKey="sim"
+            stroke="#ff4a4a"
+            strokeDasharray="6 3"
+            strokeWidth={1.5}
+            dot={false}
+            name="Simulation"
+            connectNulls={false}
+          />
+        )}
+
+        {cursorTime !== undefined && (
+          <ReferenceLine
+            x={parseFloat(cursorTime.toFixed(3))}
+            stroke="#ffffff"
+            strokeWidth={1.5}
+          />
+        )}
       </LineChart>
     </ResponsiveContainer>
   );

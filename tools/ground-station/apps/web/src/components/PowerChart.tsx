@@ -15,9 +15,10 @@ import type { FlightFrame } from '@mpr/shared';
 interface PowerChartProps {
   frames: FlightFrame[];
   version: number;
+  cursorTime?: number;
 }
 
-export function PowerChart({ frames, version }: PowerChartProps) {
+export function PowerChart({ frames, version, cursorTime }: PowerChartProps) {
   const data = useMemo(() => {
     if (!frames.length) return [];
     const t0 = frames[0].timestamp_ms;
@@ -98,6 +99,14 @@ export function PowerChart({ frames, version }: PowerChartProps) {
             strokeWidth={2}
             dot={false}
             name="Battery"
+          />
+        )}
+
+        {cursorTime !== undefined && (
+          <ReferenceLine
+            x={parseFloat(cursorTime.toFixed(3))}
+            stroke="#ffffff"
+            strokeWidth={1.5}
           />
         )}
       </LineChart>
