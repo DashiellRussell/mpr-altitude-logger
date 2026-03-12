@@ -126,7 +126,7 @@ body {
   grid-template-rows: 1fr auto;
   gap: 0;
   height: calc(100vh - 100px);
-  border: 1px solid #0f2a1a;
+  border: 1px solid #1a1a1a;
   position: relative;
 }
 
@@ -143,38 +143,22 @@ body {
 .launch-layout::before {
   top: -1px;
   left: -1px;
-  border-top: 2px solid #1aff5a;
-  border-left: 2px solid #1aff5a;
+  border-top: 2px solid #ffffff;
+  border-left: 2px solid #ffffff;
 }
 .launch-layout::after {
   bottom: -1px;
   right: -1px;
-  border-bottom: 2px solid #1aff5a;
-  border-right: 2px solid #1aff5a;
+  border-bottom: 2px solid #ffffff;
+  border-right: 2px solid #ffffff;
 }
 
 .launch-left {
   grid-row: 1;
   grid-column: 1;
-  border-right: 1px solid #0a1a10;
+  border-right: 1px solid #1a1a1a;
   overflow: hidden;
   position: relative;
-}
-
-/* Scan line overlay on the 3D view */
-.launch-left::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(26, 255, 90, 0.015) 2px,
-    rgba(26, 255, 90, 0.015) 4px
-  );
-  pointer-events: none;
-  z-index: 2;
 }
 
 .launch-right {
@@ -196,7 +180,7 @@ body {
     grid-template-columns: 1fr;
     grid-template-rows: 400px 1fr auto;
   }
-  .launch-left { grid-column: 1; border-right: none; border-bottom: 1px solid #0a1a10; }
+  .launch-left { grid-column: 1; border-right: none; border-bottom: 1px solid #1a1a1a; }
   .launch-right { grid-column: 1; grid-row: 2; }
   .launch-playback { grid-column: 1; grid-row: 3; }
 }
@@ -213,7 +197,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #1a3a2a;
+  color: #333333;
   font-size: 13px;
   letter-spacing: 2px;
   text-transform: uppercase;
@@ -222,7 +206,7 @@ body {
 /* ===== TELEMETRY PANEL — HUD STYLE ===== */
 .telemetry-panel {
   padding: 20px 24px;
-  border-bottom: 1px solid #0a1a10;
+  border-bottom: 1px solid #1a1a1a;
   background: #020408;
   position: relative;
 }
@@ -235,7 +219,7 @@ body {
   right: 12px;
   font-size: 8px;
   letter-spacing: 3px;
-  color: #1a5a3a;
+  color: #555555;
   text-transform: uppercase;
 }
 
@@ -248,7 +232,7 @@ body {
 
 .telemetry-time {
   font-size: 16px;
-  color: #1aff5a;
+  color: #ffffff;
   font-variant-numeric: tabular-nums;
   letter-spacing: 2px;
   opacity: 0.8;
@@ -262,13 +246,13 @@ body {
 
 .telemetry-readout {
   text-align: left;
-  border-left: 2px solid #0a1a10;
+  border-left: 2px solid #1a1a1a;
   padding-left: 10px;
 }
 
 .telemetry-label {
   font-size: 8px;
-  color: #1a5a3a;
+  color: #555555;
   text-transform: uppercase;
   letter-spacing: 2px;
   margin-bottom: 4px;
@@ -284,13 +268,13 @@ body {
 
 .telemetry-unit {
   font-size: 13px;
-  color: #1a5a3a;
+  color: #555555;
   margin-left: 4px;
   font-weight: 400;
 }
 
 .telemetry-empty {
-  color: #1a3a2a;
+  color: #333333;
   font-size: 13px;
   text-align: center;
   padding: 40px;
@@ -367,14 +351,14 @@ body {
   right: 16px;
   font-size: 8px;
   letter-spacing: 3px;
-  color: #1a3a2a;
+  color: #333333;
   z-index: 1;
   pointer-events: none;
 }
 
 .chart-tab-bar {
   display: flex;
-  border-bottom: 1px solid #0a1a10;
+  border-bottom: 1px solid #1a1a1a;
   background: #020408;
   flex-shrink: 0;
 }
@@ -383,7 +367,7 @@ body {
   padding: 10px 18px;
   border: none;
   background: transparent;
-  color: #1a5a3a;
+  color: #555555;
   font-family: inherit;
   font-size: 10px;
   letter-spacing: 1.5px;
@@ -394,12 +378,12 @@ body {
 }
 
 .chart-tab:hover {
-  color: #4aff8a;
+  color: #cccccc;
 }
 
 .chart-tab-active {
-  color: #1aff5a;
-  border-bottom-color: #1aff5a;
+  color: #ffffff;
+  border-bottom-color: #ffffff;
 }
 
 .chart-tab-content {
@@ -416,7 +400,7 @@ body {
   gap: 10px;
   padding: 10px 20px;
   background: #020408;
-  border-top: 1px solid #0a1a10;
+  border-top: 1px solid #1a1a1a;
   position: relative;
 }
 
@@ -427,17 +411,17 @@ body {
   left: 0;
   width: 3px;
   height: 100%;
-  background: #1aff5a;
+  background: #ffffff;
   opacity: 0.3;
 }
 
 .playback-btn {
   width: 32px;
   height: 32px;
-  border: 1px solid #0a1a10;
+  border: 1px solid #1a1a1a;
   border-radius: 0;
-  background: #050a08;
-  color: #1aff5a;
+  background: #0a0a0a;
+  color: #ffffff;
   font-family: inherit;
   font-size: 12px;
   cursor: pointer;
@@ -449,30 +433,30 @@ body {
 }
 
 .playback-btn:hover {
-  background: #0a1a10;
-  border-color: #1aff5a;
+  background: #1a1a1a;
+  border-color: #ffffff;
 }
 
 .playback-btn-play {
   width: 36px;
   height: 36px;
   font-size: 14px;
-  border-color: #1a5a3a;
+  border-color: #555555;
 }
 
 .playback-speed {
   width: auto;
   padding: 0 10px;
   font-size: 10px;
-  color: #1a5a3a;
+  color: #555555;
   letter-spacing: 1px;
 }
 
 .playback-track {
   flex: 1;
   height: 24px;
-  background: #050a08;
-  border: 1px solid #0a1a10;
+  background: #0a0a0a;
+  border: 1px solid #1a1a1a;
   border-radius: 0;
   position: relative;
   cursor: pointer;
@@ -497,15 +481,15 @@ body {
   top: 0;
   bottom: 0;
   width: 2px;
-  background: #1aff5a;
-  box-shadow: 0 0 8px rgba(26, 255, 90, 0.6);
+  background: #ffffff;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
   pointer-events: none;
   z-index: 1;
 }
 
 .playback-time {
   font-size: 14px;
-  color: #1aff5a;
+  color: #ffffff;
   font-variant-numeric: tabular-nums;
   letter-spacing: 2px;
   min-width: 90px;

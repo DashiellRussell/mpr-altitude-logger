@@ -104,10 +104,10 @@ export function RocketScene({ state, altitude, velocity, maxAlt, isPlaying }: Ro
             args={[60, 60]}
             cellSize={1}
             cellThickness={0.8}
-            cellColor="#143020"
+            cellColor="#1a1a1a"
             sectionSize={5}
             sectionThickness={1.5}
-            sectionColor="#1a5a3a"
+            sectionColor="#333333"
             fadeDistance={30}
             fadeStrength={1.5}
             infiniteGrid
