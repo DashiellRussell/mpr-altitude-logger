@@ -16,27 +16,30 @@ _vfs = None
 def mount():
     """Mount SD card at /sd. Returns True on success."""
     global _sd, _vfs
+    import time
     try:
+        cs = Pin(config.SPI_CS, Pin.OUT)
+        cs.value(1)
+        time.sleep_ms(100)  # Let CS settle after power-up
+
         spi = SPI(
             config.SPI_ID,
-            baudrate=1_000_000,  # Init at 1 MHz — SD cards require slow clock for init
+            baudrate=400_000,  # SD spec: init at ≤400 kHz
             polarity=0,
             phase=0,
             sck=Pin(config.SPI_SCK),
             mosi=Pin(config.SPI_MOSI),
             miso=Pin(config.SPI_MISO),
         )
-        cs = Pin(config.SPI_CS, Pin.OUT, value=1)
+
+        # Send 80 dummy clocks with CS high (SD card init sequence)
+        spi.write(b'\xff' * 10)
+        time.sleep_ms(10)
+
         _sd = sdcard.SDCard(spi, cs)
+
         # Ramp up to configured speed for data transfer
-        spi.init(
-            baudrate=config.SPI_BAUD,
-            polarity=0,
-            phase=0,
-            sck=Pin(config.SPI_SCK),
-            mosi=Pin(config.SPI_MOSI),
-            miso=Pin(config.SPI_MISO),
-        )
+        spi.init(baudrate=config.SPI_BAUD)
         _vfs = os.VfsFat(_sd)
         os.mount(_vfs, "/sd")
         return True

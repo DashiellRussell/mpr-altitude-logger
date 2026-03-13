@@ -5,6 +5,11 @@ Writes fixed-size binary frames to SD card for maximum throughput.
 At 25 Hz with 32-byte frames, that's 800 bytes/sec = ~2.7 MB/hour.
 8 GB SD card = ~2,900 hours of recording. You'll run out of battery first.
 
+Each flight gets its own folder on the SD card:
+    /sd/flight_001/
+        flight.bin       — binary telemetry frames
+        preflight.txt    — preflight check results and metadata
+
 Frame format (32 bytes, little-endian):
     u32  timestamp_ms
     u8   state
@@ -35,46 +40,74 @@ def _try_sync():
         pass  # MicroPython build without os.sync() — flush-only fallback
 
 
-def next_log_filename(base_path):
-    """Predict the next auto-incremented log filename without opening it."""
-    base = base_path.rsplit('.', 1)[0]
-    ext = base_path.rsplit('.', 1)[1] if '.' in base_path else 'bin'
-    fname = f"{base}.{ext}"
+def _dir_exists(path):
+    try:
+        s = os.stat(path)
+        return s[0] & 0x4000 != 0
+    except OSError:
+        return False
+
+
+def _get_name_override():
+    """Read flight name override from SD card, or return None."""
+    try:
+        with open('/sd/_flight_name.txt', 'r') as f:
+            name = f.read().strip()
+        if name:
+            return name
+    except OSError:
+        pass
+    return None
+
+
+def next_flight_dir():
+    """Find the next available flight directory path (without creating it)."""
+    override = _get_name_override()
+    if override:
+        return '/sd/' + override
+
     idx = 1
     while True:
-        try:
-            os.stat(fname)
-            fname = f"{base}_{idx:03d}.{ext}"
-            idx += 1
-        except OSError:
-            return fname
+        d = '/sd/flight_{:03d}'.format(idx)
+        if not _dir_exists(d):
+            return d
+        idx += 1
+
+
+def next_log_filename(base_path=None):
+    """Predict the next flight log path. Returns e.g. '/sd/flight_001/flight.bin'."""
+    return next_flight_dir() + '/flight.bin'
 
 
 class FlightLogger:
-    """Writes binary telemetry frames to SD card."""
+    """Writes binary telemetry frames to a per-flight folder on SD card."""
 
-    def __init__(self, filename, flush_every=25):
-        self.filename = filename
+    def __init__(self, filename=None, flush_every=25, sync_every=10):
         self.flush_every = flush_every
+        self.sync_every = sync_every  # os.sync() every N flushes (not every flush)
         self._file = None
         self._count = 0
+        self._flush_count = 0
         self._total_frames = 0
         self._sd_failed = False
+        self._flight_dir = None
 
     def open(self):
-        """Open log file. Creates new file with incrementing name if exists."""
-        # Find next available filename
-        base = self.filename.rsplit('.', 1)[0]
-        ext = self.filename.rsplit('.', 1)[1] if '.' in self.filename else 'bin'
+        """Create flight folder and open flight.bin inside it."""
+        flight_dir = next_flight_dir()
 
-        fname = f"{base}.{ext}"
-        idx = 1
-        while self._file_exists(fname):
-            fname = f"{base}_{idx:03d}.{ext}"
-            idx += 1
+        # Create directory (ok if override folder already exists)
+        try:
+            os.mkdir(flight_dir)
+        except OSError:
+            pass
+
+        self._flight_dir = flight_dir
+        fname = flight_dir + '/flight.bin'
 
         self._file = open(fname, 'wb')
         self._count = 0
+        self._flush_count = 0
         self._total_frames = 0
         self._sd_failed = False
 
@@ -85,6 +118,17 @@ class FlightLogger:
         _try_sync()
 
         return fname
+
+    def write_preflight(self, content):
+        """Write preflight check results to the flight folder."""
+        if self._flight_dir is None:
+            return
+        try:
+            with open(self._flight_dir + '/preflight.txt', 'w') as f:
+                f.write(content)
+            _try_sync()
+        except Exception as e:
+            print('[SD] Preflight write failed: {}'.format(e))
 
     def write_frame(self, timestamp_ms, state, pressure_pa, temperature_c,
                     alt_raw, alt_filtered, vel_filtered,
@@ -116,11 +160,15 @@ class FlightLogger:
 
             if self._count >= self.flush_every:
                 self._file.flush()
-                _try_sync()
+                self._flush_count += 1
+                # os.sync() is expensive — only do it periodically, not every flush
+                if self._flush_count >= self.sync_every:
+                    _try_sync()
+                    self._flush_count = 0
                 self._count = 0
         except Exception as e:
-            # SD card failed — stop writing to avoid crashing the sensor loop
-            print(f"[SD] Write failed: {e}")
+            # SD card failed — log details for diagnosis then stop writing
+            print(f"[SD] Write failed at frame #{self._total_frames}: {e}")
             self._sd_failed = True
 
     def notify_state_change(self, state):
@@ -129,10 +177,11 @@ class FlightLogger:
             return
         try:
             self._file.flush()
-            _try_sync()
+            _try_sync()  # Always sync on state change — these are critical
             self._count = 0
+            self._flush_count = 0
         except Exception as e:
-            print(f"[SD] Sync on state change failed: {e}")
+            print(f"[SD] Sync on state change failed at frame #{self._total_frames}: {e}")
             self._sd_failed = True
 
     def close(self):
@@ -147,16 +196,13 @@ class FlightLogger:
             self._file = None
 
     @property
+    def flight_dir(self):
+        return self._flight_dir
+
+    @property
     def frames_written(self):
         return self._total_frames
 
     @property
     def sd_failed(self):
         return self._sd_failed
-
-    def _file_exists(self, path):
-        try:
-            os.stat(path)
-            return True
-        except OSError:
-            return False

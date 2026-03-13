@@ -3,6 +3,9 @@ Avionics configuration — pin assignments, thresholds, tuning.
 Edit this file for your specific hardware setup.
 """
 
+# ── Software Version ────────────────────────────────────────
+VERSION = "1.4.1"
+
 # ── Pin Assignments ──────────────────────────────────────────
 
 # Barometer (GY-68 BMP180 — SoftI2C, hardware I2C has EIO bug on this board)
@@ -20,14 +23,14 @@ SPI_CS = 17        # GP17 — SD-ChipSelect
 SPI_BAUD = 10_000_000  # 10 MHz
 
 # ADC — voltage monitoring
-ADC_V5 = 26        # GP26 (A0) — 5V rail, 1k/1k divider
+ADC_V5 = 26        # GP26 (A0) — 5V rail, 500Ω/680Ω divider
 ADC_V9 = 27        # GP27 (A1) — 9V rail, 2k/1k divider
 ADC_V3 = 28        # GP28 (A2) — 3.3V rail, direct (no divider)
 VREF = 3.3
 ADC_RESOLUTION = 65535
 # Voltage divider ratios: V_actual = V_adc * ratio
 VDIV_3V = 1.0      # direct — 3.3V is within ADC range
-VDIV_5V = 2.0      # voltage divider — see schematic
+VDIV_5V = 1.735    # voltage divider — R1∥R2 (500Ω) + R3 (680Ω), V_tap=2.88V
 VDIV_9V = 3.0      # 2k/1k divider
 
 # Indicators
@@ -48,13 +51,17 @@ KALMAN_Q_VEL = 0.5        # process noise — velocity (m²/s²)
 KALMAN_R_ALT = 1.0        # measurement noise — barometric alt (m²)
 
 # State machine thresholds
-LAUNCH_ACCEL_THRESHOLD = 2.0   # altitude gain (m) in detection window
-LAUNCH_DETECT_WINDOW = 0.5    # seconds
+LAUNCH_ALT_THRESHOLD = 15.0    # altitude gain (m) required for launch detect
+LAUNCH_VEL_THRESHOLD = 10.0   # velocity (m/s) required for launch detect
+LAUNCH_DETECT_WINDOW = 0.5    # seconds — both thresholds must hold this long
+BOOST_RECOVERY_VEL = 3.0      # if vel drops below this in BOOST, reset to PAD
+BOOST_RECOVERY_WINDOW = 2.0   # seconds — recovery only possible within this window
 COAST_VEL_THRESHOLD = 5.0     # velocity drop from peak to detect burnout
 APOGEE_VEL_THRESHOLD = 2.0    # |velocity| < this = apogee (m/s)
 APOGEE_CONFIRM_COUNT = 5      # consecutive readings below threshold
 LANDED_VEL_THRESHOLD = 0.5    # near-zero velocity
 LANDED_CONFIRM_SECONDS = 5.0  # must be still for this long
+MAIN_CHUTE_ALT = 300.0        # DROGUE→MAIN transition altitude AGL (logging only, no deployment)
 
 # Ground reference
 GROUND_SAMPLES = 50           # samples to average for ground-level pressure

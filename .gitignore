@@ -8,6 +8,9 @@ venv/
 # Flight data (large binary files)
 *.bin
 *.csv
+flights/
+sims/
+seed_flight/
 
 # macOS
 .DS_Store
