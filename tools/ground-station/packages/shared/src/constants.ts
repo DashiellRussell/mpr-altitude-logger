@@ -22,7 +22,7 @@ export const STATE_COLORS: Record<string, string> = {
   LANDED: 'magenta',
 };
 
-/** Flag bitmask constants */
+/** Flag bitmask constants — ARMED/DROGUE/MAIN are legacy (always 0 in new logs, kept for old log compat) */
 export const FLAG_ARMED = 0x01;
 export const FLAG_DROGUE_FIRED = 0x02;
 export const FLAG_MAIN_FIRED = 0x04;
@@ -31,7 +31,7 @@ export const FLAG_ERROR = 0x08;
 /** Voltage rail specifications: nominal, min, max, divider */
 export const RAIL_SPECS: Record<string, RailSpec> = {
   '3V3': { nominal: 3.3, min: 3.0, max: 3.6, divider: 1.0 },
-  '5V': { nominal: 5.0, min: 4.5, max: 5.5, divider: 2.0 },
+  '5V': { nominal: 5.0, min: 4.5, max: 5.5, divider: 1.735 },
   '9V': { nominal: 9.0, min: 8.0, max: 10.0, divider: 3.0 },
 };
 
@@ -97,8 +97,11 @@ export const KALMAN_DEFAULTS = {
 
 /** State machine thresholds (from config.py) */
 export const STATE_THRESHOLDS = {
-  LAUNCH_ACCEL_THRESHOLD: 2.0,
+  LAUNCH_ALT_THRESHOLD: 15.0,
+  LAUNCH_VEL_THRESHOLD: 10.0,
   LAUNCH_DETECT_WINDOW: 0.5,
+  BOOST_RECOVERY_VEL: 3.0,
+  BOOST_RECOVERY_WINDOW: 2.0,
   COAST_VEL_THRESHOLD: 5.0,
   APOGEE_VEL_THRESHOLD: 2.0,
   APOGEE_CONFIRM_COUNT: 5,

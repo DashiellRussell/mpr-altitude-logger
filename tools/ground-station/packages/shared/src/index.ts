@@ -44,6 +44,9 @@ export { parseOpenRocketCsv } from './openrocket.js';
 // Analysis
 export { analyzeFlight, summarizeSim, suggestCdAdjustment } from './analysis.js';
 
+// Report
+export { generateFlightReport } from './report.js';
+
 // Utils
 export {
   pressureToAltitude,

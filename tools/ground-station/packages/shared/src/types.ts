@@ -73,6 +73,7 @@ export interface FlightStats {
   nFrames: number;
   landingVel: number;
   transitions: StateTransition[];
+  /** Legacy — always false/null in new logs (no deployment hardware) */
   drogueFired: boolean;
   drogueTime: number | null;
   mainFired: boolean;
