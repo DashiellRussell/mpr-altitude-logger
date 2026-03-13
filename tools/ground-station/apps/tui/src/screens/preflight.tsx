@@ -12,20 +12,23 @@ import { GoNogo } from '../components/go-nogo.js';
 import { VoltageBar } from '../components/voltage-bar.js';
 import { KeyBar } from '../components/key-bar.js';
 import { LedIndicator } from '../components/led-indicator.js';
+import { SDCardScreen } from './sdcard.js';
 import {
   SYSINFO_CODE,
   I2C_SCAN_CODE,
   BARO_CHECK_CODE,
   SD_CHECK_CODE,
   ADC_CHECK_CODE,
-  ARM_CHECK_CODE,
+  LED_CHECK_CODE,
+  WRITE_OVERRIDE_FLAG_CODE,
   I2C_DETAIL_CODE,
   BARO_DETAIL_CODE,
   SD_DETAIL_CODE,
   ADC_DETAIL_CODE,
-  ARM_DETAIL_CODE,
+  LED_DETAIL_CODE,
 } from '../serial/commands.js';
 
+const TUI_VERSION = '1.4.1';
 const DASH_WIDTH = 120;
 const LEFT_W = 58;
 const RIGHT_W = 60;
@@ -59,15 +62,15 @@ export function Preflight({ port }: Props) {
     { name: 'Barometer', status: 'pending', detail: '' },
     { name: 'SD Card', status: 'pending', detail: '' },
     { name: 'Voltages', status: 'pending', detail: '' },
-    { name: 'ARM Switch', status: 'pending', detail: '' },
+    { name: 'LED', status: 'pending', detail: '' },
   ]);
-  const [sysinfo, setSysinfo] = useState({ version: '', freq: '', mem: 0 });
+  const [sysinfo, setSysinfo] = useState({ version: '', freq: '', mem: 0, avionicsVersion: '' });
   const [busy, setBusy] = useState('');
   const [issues, setIssues] = useState<string[]>([]);
   const [sdInfo, setSdInfo] = useState({ total: 0, free: 0 });
-  const [armStatus, setArmStatus] = useState<'UNKNOWN' | 'SAFE' | 'ARMED'>('UNKNOWN');
   const [manualGo, setManualGo] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
+  const [showSDCard, setShowSDCard] = useState(false);
 
   // ── Boot sequence state ─────────────────────────────────────
   const BOOT_LABELS = ['Overclock', 'LED started', 'SD card', 'Barometer', 'Power rails', 'Calibrating', 'Logger open'];
@@ -117,7 +120,7 @@ export function Preflight({ port }: Props) {
     // Line parser for main.py boot output
     const handleBootLine = (line: string) => {
       // Debug: capture last few lines so we can see what's arriving
-      setBootDebugLines((prev) => [...prev.slice(-9), line]);
+      setBootDebugLines((prev) => [...prev.slice(-29), line]);
 
       // Match [N/7] step lines
       const stepMatch = line.match(/^\[(\d)\/7\]\s+(.*)$/);
@@ -171,11 +174,19 @@ export function Preflight({ port }: Props) {
     pico.onLine(handleBootLine);
 
     try {
+      // Re-enter REPL if we're in passthrough mode (retry after failed boot)
+      if (pico.mode === 'passthrough') {
+        await pico.enterRepl();
+      }
+      // Write override flag file if manual GO is active
+      if (manualGo) {
+        await pico.execRaw(WRITE_OVERRIDE_FLAG_CODE, 5000);
+      }
       await pico.softReset();
     } catch (e) {
       setBootError(`Reset failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [pico]);
+  }, [pico, manualGo]);
 
   // Cleanup boot line listener on unmount only
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -215,7 +226,7 @@ export function Preflight({ port }: Props) {
       ['Barometer', BARO_DETAIL_CODE],
       ['SD Card', SD_DETAIL_CODE],
       ['Voltages', ADC_DETAIL_CODE],
-      ['ARM Switch', ARM_DETAIL_CODE],
+      ['LED', LED_DETAIL_CODE],
     ];
 
     for (const [catName, code] of categories) {
@@ -266,10 +277,12 @@ export function Preflight({ port }: Props) {
         const ver = parts[0]?.trim() ?? '?';
         const freq = parts[1] ? `${Math.floor(parseInt(parts[1]) / 1_000_000)} MHz` : '?';
         const mem = parts[2] ? parseInt(parts[2]) : 0;
+        const avVer = parts[3]?.trim() ?? '?';
         setSysinfo({
           version: ver.length > 35 ? ver.slice(0, 35) + '...' : ver,
           freq,
           mem,
+          avionicsVersion: avVer,
         });
       }
     } catch (e) {
@@ -393,25 +406,27 @@ export function Preflight({ port }: Props) {
     }
   }, [pico.execRaw, updateCheck]);
 
-  const checkARM = useCallback(async () => {
-    updateCheck('ARM Switch', 'running', '');
+  const checkLED = useCallback(async () => {
+    updateCheck('LED', 'running', '');
     await delay(1000);
     try {
-      const { stdout, stderr } = await pico.execRaw(ARM_CHECK_CODE, 5000);
-      logCheck('ARM Switch', stdout, stderr);
-      if (stderr) { updateCheck('ARM Switch', 'skip', 'ARM pin not available'); return; }
+      const { stdout, stderr } = await pico.execRaw(LED_CHECK_CODE, 5000);
+      logCheck('LED', stdout, stderr);
+      if (stderr) {
+        updateCheck('LED', 'fail', stderr);
+        setIssues((prev) => [...prev, 'LED test failed']);
+        return;
+      }
       const val = stdout.trim();
-      if (val.startsWith('ERR:')) { updateCheck('ARM Switch', 'skip', 'ARM pin not configured'); return; }
-      const pinVal = parseInt(val);
-      if (pinVal === 1) {
-        setArmStatus('SAFE');
-        updateCheck('ARM Switch', 'pass', 'Switch OPEN \u2014 SAFE');
+      if (val === 'OK') {
+        updateCheck('LED', 'pass', 'Blinked OK — check board visually');
       } else {
-        setArmStatus('ARMED');
-        updateCheck('ARM Switch', 'pass', 'Switch CLOSED \u2014 ARMED');
+        updateCheck('LED', 'fail', `Unexpected: ${val}`);
+        setIssues((prev) => [...prev, 'LED test error']);
       }
     } catch (e) {
-      updateCheck('ARM Switch', 'skip', String(e));
+      updateCheck('LED', 'fail', String(e));
+      setIssues((prev) => [...prev, 'LED test error']);
     }
   }, [pico.execRaw, updateCheck]);
 
@@ -426,11 +441,11 @@ export function Preflight({ port }: Props) {
     await checkBarometer();
     await checkSD();
     await checkADC();
-    await checkARM();
+    await checkLED();
 
     setPhase('live');
     runningRef.current = false;
-  }, [checkI2C, checkBarometer, checkSD, checkADC, checkARM]);
+  }, [checkI2C, checkBarometer, checkSD, checkADC, checkLED]);
 
   // ── Auto-run on connection ───────────────────────────────────────
   useEffect(() => {
@@ -443,14 +458,51 @@ export function Preflight({ port }: Props) {
     }
   }, [pico.connected, phase, readSysinfo, runChecks]);
 
+  // ── Version mismatch detection ─────────────────────────────────
+  const versionMismatch = sysinfo.avionicsVersion !== '' && sysinfo.avionicsVersion !== '?' && sysinfo.avionicsVersion !== TUI_VERSION;
+
   // ── GO status (computed early so key handler can use it) ────────
   const allPassed = checks.every((c) => c.status === 'pass' || c.status === 'skip');
-  const isNaturalGo = allPassed && telemetry.voltagesOk && telemetry.baroSane && sdInfo.free > 10 && issues.length === 0;
+  const isNaturalGo = allPassed && telemetry.voltagesOk && telemetry.baroSane && sdInfo.free > 10 && issues.length === 0 && !versionMismatch;
   const isGo = isNaturalGo || manualGo;
 
   // ── Key handling ─────────────────────────────────────────────────
   useInput((input, _key) => {
+    // Disable when sub-screens are active
+    if (showSDCard || showDetail) return;
+
     if (input === 'q' || input === 'Q') exit();
+
+    // Boot phase: retry or go back to preflight
+    if (phase === 'booting') {
+      if (input === 'r' || input === 'R') {
+        // Clean up old listener and retry boot
+        if (bootLineHandlerRef.current) {
+          pico.offLine(bootLineHandlerRef.current);
+          bootLineHandlerRef.current = null;
+        }
+        setBootDebugLines([]);
+        triggerBoot();
+      }
+      if (_key.escape || input === 'b' || input === 'B') {
+        // Go back to preflight dashboard — re-enter REPL so checks work
+        if (bootLineHandlerRef.current) {
+          pico.offLine(bootLineHandlerRef.current);
+          bootLineHandlerRef.current = null;
+        }
+        setBootDebugLines([]);
+        setBootSteps([]);
+        setBootError(null);
+        setBootReady(false);
+        pico.enterRepl().then(() => {
+          setPhase('live');
+        }).catch(() => {
+          // If re-entering REPL fails, go back anyway
+          setPhase('live');
+        });
+      }
+      return;
+    }
 
     // Boot sequence: requires GO (natural or manual override), two-press confirmation
     if ((input === 'b' || input === 'B') && phase === 'live') {
@@ -484,6 +536,9 @@ export function Preflight({ port }: Props) {
     if ((input === 'd' || input === 'D') && phase !== 'booting') {
       setShowDetail((prev) => !prev);
     }
+    if ((input === 's' || input === 'S') && phase === 'live' && pico.connected) {
+      setShowSDCard(true);
+    }
   });
 
   // ── Count stats ──────────────────────────────────────────────────
@@ -494,15 +549,18 @@ export function Preflight({ port }: Props) {
 
   // velHistory is now tracked in useTelemetry hook
 
-  // ── ARM banner ───────────────────────────────────────────────────
-  const armBanner = armStatus === 'ARMED'
-    ? <Text backgroundColor="red" color="white" bold>{'  \u26a0  ARMED  '}</Text>
-    : armStatus === 'SAFE'
-      ? <Text backgroundColor="green" color="white" bold>{'  \u2713  SAFE   '}</Text>
-      : <Text dimColor>{'  ? UNKNOWN '}</Text>;
+  // ── SD Card screen ─────────────────────────────────────────
+  if (showSDCard) {
+    return (
+      <SDCardScreen
+        pico={pico}
+        onBack={() => setShowSDCard(false)}
+      />
+    );
+  }
 
   // ── Detail view: sub-checks per category ─────────────────────
-  const detailCategories = ['I2C Bus', 'Barometer', 'SD Card', 'Voltages', 'ARM Switch'];
+  const detailCategories = ['I2C Bus', 'Barometer', 'SD Card', 'Voltages', 'LED'];
   const NCOLS = detailCategories.length;
   const COL_W = Math.floor((DASH_WIDTH - (NCOLS - 1)) / NCOLS);
 
@@ -602,100 +660,64 @@ export function Preflight({ port }: Props) {
       <Box flexDirection="column" width={DASH_WIDTH + 2}>
         <Header title="BOOT SEQUENCE" width={DASH_WIDTH} />
 
-        <Box flexDirection="row">
-          {/* Left: LED + Boot steps */}
-          <Box flexDirection="column" width={LEFT_W}>
-            <Panel title="ONBOARD LED" width={LEFT_W} borderColor={bootError ? 'red' : bootReady ? 'green' : 'yellow'}>
-              <LedIndicator state={ledState} />
-            </Panel>
-
+        {/* Status banner */}
+        {bootError && (
+          <Box flexDirection="column">
+            <Text backgroundColor="red" color="black" bold>
+              {'  \u2717  BOOT ERROR'.padEnd(DASH_WIDTH)}
+            </Text>
             <Text>{' '}</Text>
+          </Box>
+        )}
 
-            <Panel title="BOOT PROGRESS" width={LEFT_W} borderColor={bootError ? 'red' : bootReady ? 'green' : 'yellow'}>
-              {bootSteps.map((s) => (
-                <CheckItem
-                  key={s.step}
-                  name={`[${s.step}/7] ${s.label}`}
-                  status={s.status === 'ok' ? 'pass' : s.status === 'fail' ? 'fail' : s.status === 'warn' ? 'fail' : 'running'}
-                  detail={s.detail}
-                  maxWidth={LEFT_W - 2}
-                />
-              ))}
+        {bootReady && (
+          <Box flexDirection="column">
+            <Text backgroundColor="green" color="black" bold>
+              {'  \u2605  READY FOR FLIGHT — Board logging at 25Hz. Safe to disconnect USB.'.padEnd(DASH_WIDTH)}
+            </Text>
+            <Text>{' '}</Text>
+          </Box>
+        )}
+
+        {!bootReady && !bootError && (
+          <Text color="yellow"> <Spinner type="dots" /> Pico is rebooting into flight mode...</Text>
+        )}
+
+        {bootCountdown !== null && !bootReady && !bootError && (
+          <Text color="yellow"> Proceeding despite warnings in {bootCountdown}s...</Text>
+        )}
+
+        <Text>{' '}</Text>
+
+        {/* Full-width serial log */}
+        <Panel title="SERIAL OUTPUT" width={DASH_WIDTH} borderColor={bootError ? 'red' : bootReady ? 'green' : 'yellow'}>
+          {bootDebugLines.length === 0 && (
+            <Text dimColor> Waiting for output...</Text>
+          )}
+          {bootDebugLines.map((line, i) => {
+            const isFatal = line.includes('FATAL') || line.includes('FAIL');
+            const isOk = line.includes('OK') || line.includes('[RDY]');
+            const isWarn = line.includes('WARN') || line.includes('retry');
+            const color = isFatal ? 'red' : isOk ? 'green' : isWarn ? 'yellow' : undefined;
+            return (
+              <Text key={i} color={color}>
+                {' '}{line}
+              </Text>
+            );
+          })}
+        </Panel>
+
+        {/* PAD telemetry when ready */}
+        {bootReady && padTelemetry && (
+          <>
+            <Text>{' '}</Text>
+            <Panel title="PAD TELEMETRY (1 Hz)" width={DASH_WIDTH} borderColor="green">
+              <Text> {padTelemetry}</Text>
             </Panel>
-          </Box>
+          </>
+        )}
 
-          <Box width={2}><Text>{'  '}</Text></Box>
-
-          {/* Right: Status banners + PAD telemetry */}
-          <Box flexDirection="column" width={RIGHT_W}>
-            {bootError && (
-              <Box flexDirection="column">
-                <Text backgroundColor="red" color="white" bold>
-                  {'  \u2717  BOOT ERROR  \u2717'.padEnd(RIGHT_W - 2)}
-                </Text>
-                <Text backgroundColor="red" color="white" bold>
-                  {`  ${bootError}`.slice(0, RIGHT_W - 2).padEnd(RIGHT_W - 2)}
-                </Text>
-                <Text>{' '}</Text>
-                <Text dimColor>  Board LED is solid ON. Power cycle to retry.</Text>
-              </Box>
-            )}
-
-            {bootCountdown !== null && !bootReady && !bootError && (
-              <Panel title="NON-FATAL ERROR" width={RIGHT_W} borderColor="yellow">
-                <Text color="yellow"> Proceeding in {bootCountdown} seconds...</Text>
-                <Text dimColor> Board encountered warnings but will continue.</Text>
-              </Panel>
-            )}
-
-            {!bootReady && !bootError && bootCountdown === null && (
-              <Panel title="BOOTING" width={RIGHT_W} borderColor="yellow">
-                <Text color="yellow"> <Spinner type="dots" /> Pico is rebooting into flight mode...</Text>
-                <Text>{' '}</Text>
-                <Text dimColor> Watching serial output from main.py.</Text>
-                <Text dimColor> Boot steps will appear as they complete.</Text>
-                <Text>{' '}</Text>
-                <Text dimColor> Lines: {bootDebugLines.length}  Events: {pico.link.debugDataEvents}  Bytes: {pico.link.debugBytesReceived}</Text>
-                <Text dimColor> Buf[{pico.link.debugLineBufferLen}]: {pico.link.debugLineBufferHead.slice(0, RIGHT_W - 12)}</Text>
-                {pico.link.debugPortError && (
-                  <Text color="red"> Port: {pico.link.debugPortError}</Text>
-                )}
-                {bootDebugLines.slice(-3).map((l, i) => (
-                  <Text key={i} dimColor> {l.slice(0, RIGHT_W - 4)}</Text>
-                ))}
-              </Panel>
-            )}
-
-            {bootReady && (
-              <>
-                <Box flexDirection="column">
-                  <Text backgroundColor="green" color="white" bold>
-                    {'  \u2605  READY FOR FLIGHT  \u2605'.padEnd(RIGHT_W - 2)}
-                  </Text>
-                  <Text backgroundColor="green" color="white" bold>
-                    {'  Board logging at 25Hz. Safe to disconnect USB.'.padEnd(RIGHT_W - 2)}
-                  </Text>
-                </Box>
-
-                <Text>{' '}</Text>
-
-                {padTelemetry && (
-                  <Panel title="PAD TELEMETRY (1 Hz)" width={RIGHT_W} borderColor="green">
-                    <Text> {padTelemetry}</Text>
-                  </Panel>
-                )}
-
-                {!padTelemetry && (
-                  <Panel title="PAD TELEMETRY" width={RIGHT_W} borderColor="green">
-                    <Text color="yellow"> <Spinner type="dots" /> Waiting for first PAD line...</Text>
-                  </Panel>
-                )}
-              </>
-            )}
-          </Box>
-        </Box>
-
-        <KeyBar keys={[['Q', 'Quit']]} width={DASH_WIDTH} />
+        <KeyBar keys={[['R', 'Retry Boot'], ['B', 'Back'], ['Q', 'Quit']]} width={DASH_WIDTH} />
       </Box>
     );
   }
@@ -718,6 +740,15 @@ export function Preflight({ port }: Props) {
             ) : (
               <Text dimColor> Firmware  --</Text>
             )}
+            {sysinfo.avionicsVersion ? (
+              <Text> Avionics  <Text bold>v{sysinfo.avionicsVersion}</Text>{'    '}TUI  <Text bold>v{TUI_VERSION}</Text>
+                {sysinfo.avionicsVersion !== TUI_VERSION && sysinfo.avionicsVersion !== '?' && (
+                  <Text color="red" bold>  VERSION MISMATCH</Text>
+                )}
+              </Text>
+            ) : (
+              <Text dimColor> Avionics  --</Text>
+            )}
             {sysinfo.freq ? (
               <Text> CPU       {sysinfo.freq}{'    '}Mem  {sysinfo.mem > 0 ? `${(sysinfo.mem / 1024).toFixed(0)} KB free` : '--'}</Text>
             ) : (
@@ -729,32 +760,12 @@ export function Preflight({ port }: Props) {
 
           {/* Hardware Checks Panel */}
           <Panel title={`HARDWARE CHECKS  ${nPass}/${nTotal} passed${nFail > 0 ? `  ${nFail} failed` : ''}`} width={LEFT_W} borderColor={nFail > 0 ? 'red' : nPass === nTotal ? 'green' : 'yellow'}>
-            {checks.map((c) => {
-              if (c.name === 'ARM Switch' && c.status === 'pass') {
-                return (
-                  <React.Fragment key={c.name}>
-                    <Text>
-                      {' '}
-                      {armStatus === 'ARMED'
-                        ? <Text color="red" bold>{'['} ARMED {']'}</Text>
-                        : <Text color="green">{'['} SAFE  {']'}</Text>
-                      }
-                      {'  '}<Text bold>{c.name}</Text>
-                    </Text>
-                    {c.detail ? <Text dimColor>{'          '}{c.detail}</Text> : null}
-                  </React.Fragment>
-                );
-              }
-              return <CheckItem key={c.name} {...c} maxWidth={LEFT_W - 2} />;
-            })}
+            {checks.map((c) => (
+              <CheckItem key={c.name} {...c} maxWidth={LEFT_W - 2} />
+            ))}
             <Text>{' '}</Text>
             <Text dimColor> {nPass > 0 ? `\u2713 ${nPass} pass` : ''}{nFail > 0 ? `  \u2717 ${nFail} fail` : ''}{nSkip > 0 ? `  \u2192 ${nSkip} skip` : ''}{phase === 'checks' ? '  Running...' : ''}</Text>
           </Panel>
-
-          <Text>{' '}</Text>
-
-          {/* ARM Status Banner */}
-          <Box>{armBanner}</Box>
 
         </Box>
 
@@ -884,7 +895,7 @@ export function Preflight({ port }: Props) {
       )}
 
       {bootConfirm && phase === 'live' && (
-        <Text backgroundColor="yellow" color="black" bold>
+        <Text backgroundColor="yellowBright" color="black" bold>
           {'  Press [B] again to start boot sequence. Any other key to cancel.'.padEnd(DASH_WIDTH)}
         </Text>
       )}
@@ -896,6 +907,7 @@ export function Preflight({ port }: Props) {
                 ...(isGo ? [['B', 'Boot Sequence'] as [string, string]] : []),
                 ['R', 'Recalibrate'],
                 ['T', 'Re-test'],
+                ['S', 'SD Card'],
                 ['G', manualGo ? 'Remove Override' : 'Manual GO Override'],
                 ['D', 'Detail Logs'],
                 ['Q', 'Quit'],

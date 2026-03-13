@@ -32,10 +32,10 @@ export function GoNogo({ checks, voltagesOk, baroSane, sdFree = 100, issues = []
     const line2 = `  All ${nPass} checks passed  \u2022  Systems nominal`;
     return (
       <Box flexDirection="column">
-        <Text backgroundColor="green" color="white" bold>
+        <Text backgroundColor="green" color="black" bold>
           {line1.padEnd(innerW)}
         </Text>
-        <Text backgroundColor="green" color="white" bold>
+        <Text backgroundColor="green" color="black" bold>
           {line2.padEnd(innerW)}
         </Text>
       </Box>
@@ -83,10 +83,10 @@ export function GoNogo({ checks, voltagesOk, baroSane, sdFree = 100, issues = []
 
   return (
     <Box flexDirection="column">
-      <Text backgroundColor="red" color="white" bold>
+      <Text backgroundColor="red" color="black" bold>
         {`  \u2717  NO-GO  \u2717`.padEnd(innerW)}
       </Text>
-      <Text backgroundColor="red" color="white" bold>
+      <Text backgroundColor="red" color="black" bold>
         {`  ${reasonStr}`.padEnd(innerW)}
       </Text>
     </Box>

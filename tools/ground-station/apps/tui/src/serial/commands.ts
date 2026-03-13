@@ -5,11 +5,16 @@
  * runs on the RP2040. Ported directly from tools/preflight.py.
  */
 
-/** Read system info: MicroPython version, CPU frequency, free memory */
+/** Read system info: MicroPython version, CPU frequency, free memory, avionics version */
 export const SYSINFO_CODE = `\
 import sys, gc, machine
 gc.collect()
-print('{},{},{}'.format(sys.version, machine.freq(), gc.mem_free()))
+try:
+    import config
+    av = config.VERSION
+except:
+    av = '?'
+print('{},{},{},{}'.format(sys.version, machine.freq(), gc.mem_free(), av))
 `;
 
 /** Scan I2C bus for connected devices */
@@ -33,8 +38,14 @@ export const SD_CHECK_CODE = `\
 import os
 from machine import SPI, Pin
 import sdcard
-spi = SPI(0, baudrate=1000000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
-cs = Pin(17, Pin.OUT, value=1)
+import time
+cs = Pin(17, Pin.OUT)
+cs.value(1)
+time.sleep_ms(100)
+spi = SPI(0, baudrate=400000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
+cs.value(1)
+spi.write(b'\\xff' * 10)
+time.sleep_ms(10)
 sd = sdcard.SDCard(spi, cs)
 vfs = os.VfsFat(sd)
 os.mount(vfs, '/sd')
@@ -59,12 +70,20 @@ a9 = ADC(Pin(27)).read_u16()
 print('{},{},{}'.format(a3, a5, a9))
 `;
 
-/** Check ARM switch pin state (active LOW with pull-up) */
-export const ARM_CHECK_CODE = `\
+/** Toggle onboard LED on/off to verify it works */
+export const LED_CHECK_CODE = `\
 from machine import Pin
+import time
 try:
-    arm = Pin(15, Pin.IN, Pin.PULL_UP)
-    print(arm.value())
+    led = Pin(25, Pin.OUT)
+    led.on()
+    time.sleep_ms(300)
+    led.off()
+    time.sleep_ms(200)
+    led.on()
+    time.sleep_ms(300)
+    led.off()
+    print('OK')
 except Exception as e:
     print('ERR:{}'.format(e))
 `;
@@ -280,10 +299,16 @@ except Exception as e:
 export const SD_DETAIL_CODE = `\
 import os
 from machine import SPI, Pin
+import time
 try:
-    spi = SPI(0, baudrate=1000000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
-    cs = Pin(17, Pin.OUT, value=1)
-    print('SPI Init:PASS:SPI0 1MHz SCK=GP18')
+    cs = Pin(17, Pin.OUT)
+cs.value(1)
+    time.sleep_ms(100)
+    spi = SPI(0, baudrate=400000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
+    cs.value(1)
+    spi.write(b'\\xff' * 10)
+    time.sleep_ms(10)
+    print('SPI Init:PASS:SPI0 400kHz SCK=GP18')
 except Exception as e:
     print('SPI Init:FAIL:{}'.format(e))
     raise SystemExit
@@ -339,7 +364,7 @@ except:
 /** Detailed ADC check: per-rail raw+converted+range check */
 export const ADC_DETAIL_CODE = `\
 from machine import ADC, Pin
-for name, pin, div, lo, hi in [('3V3', 28, 1.0, 3.0, 3.6), ('5V', 26, 2.0, 4.5, 5.5), ('9V', 27, 3.0, 8.0, 10.0)]:
+for name, pin, div, lo, hi in [('3V3', 28, 1.0, 3.0, 3.6), ('5V', 26, 1.735, 4.5, 5.5), ('9V', 27, 3.0, 8.0, 10.0)]:
     try:
         adc = ADC(Pin(pin))
         raw = adc.read_u16()
@@ -353,21 +378,218 @@ for name, pin, div, lo, hi in [('3V3', 28, 1.0, 3.0, 3.6), ('5V', 26, 2.0, 4.5, 
         print('{} Rail:FAIL:{}'.format(name, e))
 `;
 
+/** List flight folders and files on SD card */
+export const SD_LIST_CODE = `\
+import os
+from machine import SPI, Pin
+import sdcard
+import time
+cs = Pin(17, Pin.OUT)
+cs.value(1)
+time.sleep_ms(100)
+spi = SPI(0, baudrate=400000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
+cs.value(1)
+spi.write(b'\\xff' * 10)
+time.sleep_ms(10)
+sd = sdcard.SDCard(spi, cs)
+vfs = os.VfsFat(sd)
+os.mount(vfs, '/sd')
+st = os.statvfs('/sd')
+total = (st[0] * st[2]) // (1024*1024)
+free = (st[0] * st[3]) // (1024*1024)
+print('CAP:{},{}'.format(total, free))
+entries = sorted(os.listdir('/sd'))
+for e in entries:
+    path = '/sd/' + e
+    try:
+        s = os.stat(path)
+        if s[0] & 0x4000:
+            tsz = 0
+            try:
+                for sub in os.listdir(path):
+                    try:
+                        tsz += os.stat(path + '/' + sub)[6]
+                    except:
+                        pass
+            except:
+                pass
+            print('DIR:{}:{}'.format(e, tsz))
+            try:
+                for sub in sorted(os.listdir(path)):
+                    try:
+                        sz = os.stat(path + '/' + sub)[6]
+                        print('DIRFILE:{}:{}:{}'.format(e, sub, sz))
+                    except:
+                        print('DIRFILE:{}:{}:0'.format(e, sub))
+            except:
+                pass
+        else:
+            print('FILE:{}:{}'.format(e, s[6]))
+    except:
+        pass
+# Predict next flight folder
+override = None
+try:
+    with open('/sd/_flight_name.txt', 'r') as nf:
+        override = nf.read().strip()
+except:
+    pass
+if override:
+    print('NEXT:{}/flight.bin'.format(override))
+    print('OVERRIDE:{}'.format(override))
+else:
+    idx = 1
+    while True:
+        d = '/sd/flight_{:03d}'.format(idx)
+        try:
+            os.stat(d)
+            idx += 1
+        except:
+            break
+    print('NEXT:flight_{:03d}/flight.bin'.format(idx))
+os.umount('/sd')
+`;
+
+/** Write a flight name override file to SD card */
+export const SD_SET_NAME_CODE = (name: string) => `\
+import os
+from machine import SPI, Pin
+import sdcard
+import time
+cs = Pin(17, Pin.OUT)
+cs.value(1)
+time.sleep_ms(100)
+spi = SPI(0, baudrate=400000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
+cs.value(1)
+spi.write(b'\\xff' * 10)
+time.sleep_ms(10)
+sd = sdcard.SDCard(spi, cs)
+vfs = os.VfsFat(sd)
+os.mount(vfs, '/sd')
+with open('/sd/_flight_name.txt', 'w') as f:
+    f.write('${name}')
+os.umount('/sd')
+print('OK')
+`;
+
+/** Clear the flight name override file from SD card */
+export const SD_CLEAR_NAME_CODE = `\
+import os
+from machine import SPI, Pin
+import sdcard
+import time
+cs = Pin(17, Pin.OUT)
+cs.value(1)
+time.sleep_ms(100)
+spi = SPI(0, baudrate=400000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
+cs.value(1)
+spi.write(b'\\xff' * 10)
+time.sleep_ms(10)
+sd = sdcard.SDCard(spi, cs)
+vfs = os.VfsFat(sd)
+os.mount(vfs, '/sd')
+try:
+    os.remove('/sd/_flight_name.txt')
+    print('OK')
+except:
+    print('OK')
+os.umount('/sd')
+`;
+
+/** Wipe flight folders and legacy .bin files from the SD card */
+export const SD_WIPE_CODE = `\
+import os
+from machine import SPI, Pin
+import sdcard
+import time
+cs = Pin(17, Pin.OUT)
+cs.value(1)
+time.sleep_ms(100)
+spi = SPI(0, baudrate=400000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
+cs.value(1)
+spi.write(b'\\xff' * 10)
+time.sleep_ms(10)
+sd = sdcard.SDCard(spi, cs)
+vfs = os.VfsFat(sd)
+os.mount(vfs, '/sd')
+removed = 0
+entries = os.listdir('/sd')
+for e in entries:
+    path = '/sd/' + e
+    try:
+        s = os.stat(path)
+        if s[0] & 0x4000:
+            for sub in os.listdir(path):
+                try:
+                    os.remove(path + '/' + sub)
+                except:
+                    pass
+            os.rmdir(path)
+            removed += 1
+        elif e.endswith('.bin'):
+            os.remove(path)
+            removed += 1
+    except:
+        pass
+st = os.statvfs('/sd')
+free = (st[0] * st[3]) // (1024*1024)
+os.umount('/sd')
+print('WIPE:{},{}'.format(removed, free))
+`;
+
+/** Write manual override flag so main.py skips fatal halts */
+export const WRITE_OVERRIDE_FLAG_CODE = `\
+import os
+try:
+    with open('_manual_override', 'w') as f:
+        f.write('1')
+    print('OK')
+except Exception as e:
+    print('ERR:{}'.format(e))
+`;
+
 /** Soft reset: reboots Pico into main.py while keeping USB CDC alive */
 export const SOFT_RESET_CODE = 'import machine\nmachine.soft_reset()';
 
-/** Detailed ARM switch check */
-export const ARM_DETAIL_CODE = `\
+/** Detailed LED check: pin init, on/off toggle, visual blink */
+export const LED_DETAIL_CODE = `\
 from machine import Pin
+import time
 try:
-    arm = Pin(15, Pin.IN, Pin.PULL_UP)
-    v = arm.value()
-    print('Pin Init:PASS:GP15 input with pull-up')
-    if v == 1:
-        print('Switch State:PASS:OPEN (SAFE) — pull-up reads HIGH')
-    else:
-        print('Switch State:PASS:CLOSED (ARMED) — pin pulled LOW')
+    led = Pin(25, Pin.OUT)
+    print('Pin Init:PASS:GP25 output mode')
 except Exception as e:
     print('Pin Init:FAIL:{}'.format(e))
+    raise SystemExit
+try:
+    led.on()
+    time.sleep_ms(1)
+    v = led.value()
+    led.off()
+    if v == 1:
+        print('LED On:PASS:Pin reads HIGH when set')
+    else:
+        print('LED On:FAIL:Pin did not read HIGH')
+except Exception as e:
+    print('LED On:FAIL:{}'.format(e))
+try:
+    led.off()
+    time.sleep_ms(1)
+    v = led.value()
+    if v == 0:
+        print('LED Off:PASS:Pin reads LOW when cleared')
+    else:
+        print('LED Off:FAIL:Pin did not read LOW')
+except Exception as e:
+    print('LED Off:FAIL:{}'.format(e))
+try:
+    for _ in range(3):
+        led.on()
+        time.sleep_ms(200)
+        led.off()
+        time.sleep_ms(200)
+    print('Blink Test:PASS:3 blinks completed')
+except Exception as e:
+    print('Blink Test:FAIL:{}'.format(e))
 `;
 

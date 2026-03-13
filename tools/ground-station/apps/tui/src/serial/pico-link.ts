@@ -220,6 +220,33 @@ export class PicoLink {
     this.port.write(Buffer.from('import machine; machine.soft_reset()\r\n'));
   }
 
+  /**
+   * Re-enter raw REPL from passthrough or any state.
+   * Sends Ctrl-C to interrupt running code, then Ctrl-A for raw REPL.
+   */
+  async enterRepl(): Promise<void> {
+    if (!this.port?.isOpen) throw new Error('Not connected');
+
+    this.port.removeAllListeners('data');
+
+    // Ctrl-C twice to interrupt any running program
+    this.port.write(Buffer.from('\r\x03\x03'));
+    await this.sleep(500);
+    this.port.flush();
+
+    // Ctrl-B to ensure we're in normal REPL first
+    this.port.write(Buffer.from('\x02'));
+    await this.sleep(300);
+
+    // Ctrl-A to enter raw REPL
+    this.port.write(Buffer.from('\x01'));
+    await this.sleep(500);
+    await this.drain();
+
+    this.mode_ = 'repl';
+    this.lineBuffer = '';
+  }
+
   /** Register a line listener for passthrough mode */
   onLine(cb: LineListener): void {
     this.lineListeners.push(cb);

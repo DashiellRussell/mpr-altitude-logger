@@ -10,6 +10,7 @@ interface UsePicoResult {
   reconnect: () => Promise<void>;
   execRaw: (code: string, timeout?: number) => Promise<{ stdout: string; stderr: string }>;
   softReset: () => Promise<void>;
+  enterRepl: () => Promise<void>;
   onLine: (cb: LineListener) => void;
   offLine: (cb: LineListener) => void;
 }
@@ -55,6 +56,13 @@ export function usePico(port?: string): UsePicoResult {
     setMode('passthrough');
   }, []);
 
+  const enterRepl = useCallback(async () => {
+    const link = linkRef.current;
+    if (!link.connected) throw new Error('Not connected');
+    await link.enterRepl();
+    setMode('repl');
+  }, []);
+
   const onLine = useCallback((cb: LineListener) => {
     linkRef.current.onLine(cb);
   }, []);
@@ -80,6 +88,7 @@ export function usePico(port?: string): UsePicoResult {
     reconnect: doConnect,
     execRaw,
     softReset,
+    enterRepl,
     onLine,
     offLine,
   };
