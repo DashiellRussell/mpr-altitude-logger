@@ -31,7 +31,7 @@ function parseArgs(argv: string[]): {
       simFile = args[++i];
     } else if (arg === '--help' || arg === '-h') {
       process.stdout.write(
-        `Usage: mpr-tui [options] [file.bin]
+        `Usage: mpr-tui [options] [postflight] [file.bin]
 
 Options:
   --port <path>          Serial port (auto-detect if omitted)
@@ -42,11 +42,14 @@ Options:
 Examples:
   mpr-tui                           Pre-flight check (auto-detect Pico)
   mpr-tui --port /dev/cu.usbmodem1  Pre-flight on specific port
-  mpr-tui flight.bin                Post-flight analysis
+  mpr-tui postflight                Post-flight (auto-find SD card + sim)
+  mpr-tui postflight flight.bin     Post-flight with specific file
   mpr-tui flight.bin --sim sim.csv  Post-flight with sim overlay
 `
       );
       process.exit(0);
+    } else if (arg === 'preflight' || arg === 'postflight') {
+      mode = arg;
     } else if (!arg.startsWith('--')) {
       binFile = arg;
     }

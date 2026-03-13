@@ -45,45 +45,12 @@ export function FlightSummary({ stats }: FlightSummaryProps) {
         {stats.nFrames.toLocaleString()}
         {' frames)'}
       </Text>
-      <Text> </Text>
-      <Text>
-        {'  '}
-        <Text bold>Drogue Deploy</Text>
-        {'  '}
-        {stats.drogueFired ? (
-          <Text>
-            T+{stats.drogueTime?.toFixed(2)}s     <Text color="green">* FIRED</Text>
-          </Text>
-        ) : (
-          <Text dimColor>               o NOT FIRED</Text>
-        )}
-      </Text>
-      <Text>
-        {'  '}
-        <Text bold>Main Deploy  </Text>
-        {'  '}
-        {stats.mainFired ? (
-          <Text>
-            T+{stats.mainTime?.toFixed(2)}s     <Text color="green">* FIRED</Text>
-          </Text>
-        ) : (
-          <Text dimColor>               o NOT FIRED</Text>
-        )}
-      </Text>
       <Text>
         {'  '}
         <Text bold>Landing Vel  </Text>
         <Text color="cyan">{stats.landingVel.toFixed(1).padStart(7)} m/s</Text>
       </Text>
       <Text> </Text>
-      <Text>
-        {'  '}
-        {stats.wasArmed ? (
-          <Text color="green">* ARMED</Text>
-        ) : (
-          <Text color="yellow">o NOT ARMED</Text>
-        )}
-      </Text>
       {stats.hadError && (
         <Text>
           {'  '}
