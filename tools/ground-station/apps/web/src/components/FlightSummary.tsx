@@ -59,23 +59,6 @@ export function FlightSummary({ stats, version }: FlightSummaryProps) {
           <div className="stat-value">{fmt(Math.abs(stats.landingVel))} m/s</div>
         </div>
 
-        <div className={`stat-card ${stats.drogueFired ? 'accent-green' : 'accent-red'}`}>
-          <div className="stat-label">Drogue Deploy</div>
-          <div className="stat-value">{stats.drogueFired ? 'FIRED' : 'NOT FIRED'}</div>
-          <div className="stat-sub">{stats.drogueFired ? fmtTime(stats.drogueTime) : '--'}</div>
-        </div>
-
-        <div className={`stat-card ${stats.mainFired ? 'accent-green' : 'accent-red'}`}>
-          <div className="stat-label">Main Deploy</div>
-          <div className="stat-value">{stats.mainFired ? 'FIRED' : 'NOT FIRED'}</div>
-          <div className="stat-sub">{stats.mainFired ? fmtTime(stats.mainTime) : '--'}</div>
-        </div>
-
-        <div className={`stat-card ${stats.wasArmed ? 'accent-green' : 'accent-red'}`}>
-          <div className="stat-label">ARM Switch</div>
-          <div className="stat-value">{stats.wasArmed ? 'ARMED' : 'DISARMED'}</div>
-        </div>
-
         <div className={`stat-card ${stats.hadError ? 'accent-red' : 'accent-green'}`}>
           <div className="stat-label">Error Flag</div>
           <div className="stat-value">{stats.hadError ? 'ERROR' : 'CLEAN'}</div>

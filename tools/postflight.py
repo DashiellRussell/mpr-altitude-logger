@@ -441,25 +441,10 @@ def build_summary_panel(flight: FlightData) -> Panel:
     lines.append(f"  [bold]Sample Rate[/]   [cyan]{flight.sample_rate:7.1f} Hz[/]      ({flight.n_frames:,} frames)")
     lines.append("")
 
-    # Deployment
-    if flight.drogue_time is not None:
-        lines.append(f"  [bold]Drogue Deploy[/] T+{flight.drogue_time:.2f}s     [green]\u25cf FIRED[/]")
-    else:
-        lines.append(f"  [bold]Drogue Deploy[/]                [dim]\u25cb NOT FIRED[/]")
-
-    if flight.main_time is not None:
-        lines.append(f"  [bold]Main Deploy[/]   T+{flight.main_time:.2f}s     [green]\u25cf FIRED[/]")
-    else:
-        lines.append(f"  [bold]Main Deploy[/]                  [dim]\u25cb NOT FIRED[/]")
-
     lines.append(f"  [bold]Landing Vel[/]   [cyan]{flight.landing_vel:7.1f} m/s[/]")
     lines.append("")
 
     # Status flags
-    if flight.was_armed:
-        lines.append(f"  [green]\u25cf ARMED[/]")
-    else:
-        lines.append(f"  [yellow]\u25cb NOT ARMED[/]")
     if flight.had_error:
         lines.append(f"  [red]\u25cf ERROR flag detected[/]")
 
@@ -673,8 +658,12 @@ def connect_pico(port: str):
     return ser
 
 
-def list_bin_files(ser) -> list[tuple[str, int]]:
-    """List .bin files on SD card."""
+def list_bin_files(ser) -> list[tuple[str, int, str]]:
+    """
+    List flight logs on SD card.
+    Returns list of (display_name, size, sd_path) tuples.
+    Scans for per-flight folders (flight_001/flight.bin) first, then legacy flat .bin files.
+    """
     code = """
 import os
 from machine import SPI, Pin
@@ -684,10 +673,25 @@ cs = Pin(17, Pin.OUT, value=1)
 sd = sdcard.SDCard(spi, cs)
 vfs = os.VfsFat(sd)
 os.mount(vfs, '/sd')
-for f in os.listdir('/sd'):
-    if f.endswith('.bin'):
-        stat = os.stat('/sd/' + f)
-        print(f + '|' + str(stat[6]))
+for entry in os.listdir('/sd'):
+    try:
+        st = os.stat('/sd/' + entry)
+        if st[0] & 0x4000:
+            bp = '/sd/' + entry + '/flight.bin'
+            try:
+                bs = os.stat(bp)
+                pf = 'y'
+                try:
+                    os.stat('/sd/' + entry + '/preflight.txt')
+                except:
+                    pf = 'n'
+                print('F|' + entry + '|' + str(bs[6]) + '|' + entry + '/flight.bin|' + pf)
+            except:
+                pass
+        elif entry.endswith('.bin'):
+            print('L|' + entry + '|' + str(st[6]) + '|' + entry + '|n')
+    except:
+        pass
 os.umount('/sd')
 """
     stdout, stderr = raw_repl_exec(ser, code)
@@ -697,14 +701,27 @@ os.umount('/sd')
     files = []
     for line in stdout.splitlines():
         line = line.strip()
-        if '|' in line:
-            name, size = line.split('|', 1)
-            files.append((name.strip(), int(size.strip())))
+        parts = line.split('|')
+        if len(parts) >= 4:
+            kind = parts[0]        # F=folder, L=legacy
+            display = parts[1]     # folder name or filename
+            size = int(parts[2])
+            sd_path = parts[3]     # relative path on SD (e.g. "flight_001/flight.bin")
+            has_preflight = len(parts) > 4 and parts[4] == 'y'
+            label = display
+            if has_preflight:
+                label += ' [preflight]'
+            files.append((label, size, sd_path))
+
+    # Sort: folder-based flights by name descending, then legacy by name
+    files.sort(key=lambda x: x[0], reverse=True)
     return files
 
 
-def download_file(ser, filename: str, console: Console) -> bytes:
-    """Download a file from Pico SD card via base64 chunks."""
+def download_file(ser, sd_path: str, console: Console) -> bytes:
+    """Download a file from Pico SD card via base64 chunks.
+    sd_path is the path relative to /sd/ (e.g. 'flight_001/flight.bin' or 'flight.bin').
+    """
     code = f"""
 import os, ubinascii
 from machine import SPI, Pin
@@ -714,7 +731,7 @@ cs = Pin(17, Pin.OUT, value=1)
 sd = sdcard.SDCard(spi, cs)
 vfs = os.VfsFat(sd)
 os.mount(vfs, '/sd')
-f = open('/sd/{filename}', 'rb')
+f = open('/sd/{sd_path}', 'rb')
 while True:
     d = f.read(512)
     if not d:
@@ -793,16 +810,16 @@ def run_download_mode(port: str | None = None) -> tuple[bytes, str]:
         files = list_bin_files(ser)
 
         if not files:
-            console.print("[yellow]No .bin files found on SD card.[/]")
+            console.print("[yellow]No flight logs found on SD card.[/]")
             ser.write(b'\x02')  # Exit raw REPL
             ser.close()
             sys.exit(1)
 
         console.print()
         console.print("[bold]Flight logs on SD card:[/]")
-        for i, (name, size) in enumerate(files, 1):
+        for i, (display_name, size, _sd_path) in enumerate(files, 1):
             size_kb = size / 1024
-            console.print(f"  [{i}] {name}  ({size_kb:.1f} KB)")
+            console.print(f"  [{i}] {display_name}  ({size_kb:.1f} KB)")
 
         console.print()
         choice = input("Select file number (or 'q' to quit): ").strip()
@@ -818,15 +835,18 @@ def run_download_mode(port: str | None = None) -> tuple[bytes, str]:
             ser.close()
             sys.exit(1)
 
-        filename = files[idx][0]
-        console.print(f"\n[cyan]Downloading {filename}...[/]")
-        data = download_file(ser, filename, console)
+        display_name, _size, sd_path = files[idx]
+        console.print(f"\n[cyan]Downloading {display_name}...[/]")
+        data = download_file(ser, sd_path, console)
         console.print(f"[green]Downloaded {len(data)} bytes[/]")
 
-        # Save locally
-        local_path = Path(filename)
+        # Save locally — use display name (folder name or filename) for local file
+        # Strip any annotation like " [preflight]" for the filename
+        clean_name = display_name.split(' [')[0]
+        local_path = Path(clean_name + '.bin' if not clean_name.endswith('.bin') else clean_name)
         local_path.write_bytes(data)
         console.print(f"[green]Saved to {local_path}[/]")
+        filename = str(local_path)
 
     finally:
         # Clean up
@@ -872,9 +892,6 @@ def save_summary(flight: FlightData, sim: SimData | None, output_path: str):
     lines.append(f"Sample Rate:   {flight.sample_rate:.1f} Hz ({flight.n_frames} frames)")
     lines.append(f"Landing Vel:   {flight.landing_vel:.1f} m/s")
     lines.append("")
-    lines.append(f"Drogue:  {'FIRED @ T+' + f'{flight.drogue_time:.2f}s' if flight.drogue_fired else 'NOT FIRED'}")
-    lines.append(f"Main:    {'FIRED @ T+' + f'{flight.main_time:.2f}s' if flight.main_fired else 'NOT FIRED'}")
-    lines.append(f"Armed:   {'YES' if flight.was_armed else 'NO'}")
     lines.append(f"Errors:  {'YES' if flight.had_error else 'NONE'}")
     lines.append("")
     lines.append("State Transitions:")
