@@ -45,6 +45,7 @@ class FlightStateMachine:
         self.max_vel = 0.0
         self.launch_time = 0
         self.apogee_time = 0
+        self.coast_start = 0
 
         # Detection counters
         self._apogee_count = 0
@@ -68,13 +69,14 @@ class FlightStateMachine:
         Returns:
             state (int)
         """
-        # Track maxima
-        if alt > self.max_alt:
-            self.max_alt = alt
-        if vel > self.max_vel:
-            self.max_vel = vel
-
         agl = alt - self.ground_alt
+
+        # Only track maxima after confirmed launch (avoid pollution from pad handling)
+        if self.state >= BOOST:
+            if alt > self.max_alt:
+                self.max_alt = alt
+            if vel > self.max_vel:
+                self.max_vel = vel
 
         if self.state == PAD:
             # Detect launch: sustained altitude gain AND velocity above threshold
@@ -84,13 +86,15 @@ class FlightStateMachine:
                 elif time.ticks_diff(now_ms, self._launch_time_start) > config.LAUNCH_DETECT_WINDOW * 1000:
                     self.state = BOOST
                     self.launch_time = now_ms
+                    self.max_alt = alt
+                    self.max_vel = vel
             else:
                 self._launch_time_start = 0
 
         elif self.state == BOOST:
-            # False launch recovery: if velocity drops to near-zero early in "boost", reset to PAD
+            # False launch recovery: if altitude drops back near ground early in "boost"
             if time.ticks_diff(now_ms, self.launch_time) < config.BOOST_RECOVERY_WINDOW * 1000:
-                if vel < config.BOOST_RECOVERY_VEL:
+                if agl < config.BOOST_RECOVERY_ALT:
                     self.state = PAD
                     self.launch_time = 0
                     self.max_alt = 0.0
@@ -99,6 +103,7 @@ class FlightStateMachine:
             # Normal burnout detection (only after recovery window closes)
             elif self.max_vel > 0 and vel < self.max_vel - config.COAST_VEL_THRESHOLD:
                 self.state = COAST
+                self.coast_start = now_ms
 
         elif self.state == COAST:
             # Detect apogee: velocity near zero or negative
@@ -109,30 +114,41 @@ class FlightStateMachine:
                     self.apogee_time = now_ms
             else:
                 self._apogee_count = 0
+            # Timeout: force apogee if stuck in COAST (noisy filter never crossing threshold)
+            if self.coast_start and time.ticks_diff(now_ms, self.coast_start) > config.COAST_TIMEOUT * 1000:
+                self.state = APOGEE
+                self.apogee_time = now_ms
 
         elif self.state == APOGEE:
-            # Transition to drogue descent immediately
+            # Transition to descent immediately
             self.state = DROGUE
 
         elif self.state == DROGUE:
-            # Detect main chute altitude (logging-only threshold)
-            if agl <= config.MAIN_CHUTE_ALT and vel < 0:
+            # Transition to MAIN at fraction of max altitude AGL (works for any apogee height)
+            max_agl = self.max_alt - self.ground_alt
+            if max_agl > 0 and agl <= max_agl * config.MAIN_CHUTE_FRACTION and vel < 0:
                 self.state = MAIN
+            # Also check for landing directly from DROGUE (safety net)
+            self._check_landed(vel, now_ms)
 
         elif self.state == MAIN:
             # Detect landing: near-zero velocity for sustained period
-            if abs(vel) < config.LANDED_VEL_THRESHOLD:
-                if self._landed_start == 0:
-                    self._landed_start = now_ms
-                elif time.ticks_diff(now_ms, self._landed_start) > config.LANDED_CONFIRM_SECONDS * 1000:
-                    self.state = LANDED
-            else:
-                self._landed_start = 0
+            self._check_landed(vel, now_ms)
 
         elif self.state == LANDED:
             pass  # Terminal state
 
         return self.state
+
+    def _check_landed(self, vel, now_ms):
+        """Check for landing: near-zero velocity sustained over confirmation window."""
+        if abs(vel) < config.LANDED_VEL_THRESHOLD:
+            if self._landed_start == 0:
+                self._landed_start = now_ms
+            elif time.ticks_diff(now_ms, self._landed_start) > config.LANDED_CONFIRM_SECONDS * 1000:
+                self.state = LANDED
+        else:
+            self._landed_start = 0
 
     @property
     def state_name(self):

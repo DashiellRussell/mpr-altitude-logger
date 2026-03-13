@@ -4,7 +4,7 @@ Edit this file for your specific hardware setup.
 """
 
 # ── Software Version ────────────────────────────────────────
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 
 # ── Pin Assignments ──────────────────────────────────────────
 
@@ -54,14 +54,15 @@ KALMAN_R_ALT = 1.0        # measurement noise — barometric alt (m²)
 LAUNCH_ALT_THRESHOLD = 15.0    # altitude gain (m) required for launch detect
 LAUNCH_VEL_THRESHOLD = 10.0   # velocity (m/s) required for launch detect
 LAUNCH_DETECT_WINDOW = 0.5    # seconds — both thresholds must hold this long
-BOOST_RECOVERY_VEL = 3.0      # if vel drops below this in BOOST, reset to PAD
+BOOST_RECOVERY_ALT = 10.0     # if AGL drops below this in BOOST, reset to PAD (m)
 BOOST_RECOVERY_WINDOW = 2.0   # seconds — recovery only possible within this window
 COAST_VEL_THRESHOLD = 5.0     # velocity drop from peak to detect burnout
+COAST_TIMEOUT = 30.0          # seconds — force apogee if stuck in COAST this long
 APOGEE_VEL_THRESHOLD = 2.0    # |velocity| < this = apogee (m/s)
 APOGEE_CONFIRM_COUNT = 5      # consecutive readings below threshold
 LANDED_VEL_THRESHOLD = 0.5    # near-zero velocity
 LANDED_CONFIRM_SECONDS = 5.0  # must be still for this long
-MAIN_CHUTE_ALT = 300.0        # DROGUE→MAIN transition altitude AGL (logging only, no deployment)
+MAIN_CHUTE_FRACTION = 0.25    # DROGUE→MAIN at this fraction of max AGL (works for any apogee)
 
 # Ground reference
 GROUND_SAMPLES = 50           # samples to average for ground-level pressure
