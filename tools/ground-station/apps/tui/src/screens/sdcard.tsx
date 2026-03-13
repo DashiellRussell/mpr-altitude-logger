@@ -21,6 +21,7 @@ interface SDFlight {
   files: { name: string; size: number }[];
   hasPreflight: boolean;
   hasBin: boolean;
+  hasBoot: boolean;
 }
 
 interface SDFile {
@@ -106,7 +107,7 @@ export function SDCardScreen({ pico, onBack }: SDCardScreenProps) {
           const parts = line.slice(4).split(':');
           const name = parts[0];
           const totalSize = parseInt(parts[1]) || 0;
-          flightMap.set(name, { name, totalSize, files: [], hasPreflight: false, hasBin: false });
+          flightMap.set(name, { name, totalSize, files: [], hasPreflight: false, hasBin: false, hasBoot: false });
         } else if (line.startsWith('DIRFILE:')) {
           const parts = line.slice(8).split(':');
           const dirName = parts[0];
@@ -117,6 +118,7 @@ export function SDCardScreen({ pico, onBack }: SDCardScreenProps) {
             flight.files.push({ name: fileName, size });
             if (fileName === 'preflight.txt') flight.hasPreflight = true;
             if (fileName === 'flight.bin') flight.hasBin = true;
+            if (fileName === 'boot.txt') flight.hasBoot = true;
           }
         } else if (line.startsWith('FILE:')) {
           const parts = line.slice(5).split(':');
@@ -321,7 +323,9 @@ export function SDCardScreen({ pico, onBack }: SDCardScreenProps) {
                       {f.hasBin && <Text color="green">BIN</Text>}
                       {f.hasBin && f.hasPreflight && <Text dimColor> + </Text>}
                       {f.hasPreflight && <Text color="yellow">PRE</Text>}
-                      {f.files.length > 2 && <Text dimColor> +{f.files.length - 2} more</Text>}
+                      {(f.hasBin || f.hasPreflight) && f.hasBoot && <Text dimColor> + </Text>}
+                      {f.hasBoot && <Text color="blue">BOOT</Text>}
+                      {f.files.length > (1 + (f.hasPreflight ? 1 : 0) + (f.hasBoot ? 1 : 0)) && <Text dimColor> +{f.files.length - (1 + (f.hasPreflight ? 1 : 0) + (f.hasBoot ? 1 : 0))} more</Text>}
                     </Text>
                   </React.Fragment>
                 ))}

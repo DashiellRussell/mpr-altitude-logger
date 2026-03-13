@@ -28,7 +28,7 @@ import {
   LED_DETAIL_CODE,
 } from '../serial/commands.js';
 
-const TUI_VERSION = '1.4.1';
+const TUI_VERSION = '1.4.2';
 const DASH_WIDTH = 120;
 const LEFT_W = 58;
 const RIGHT_W = 60;
@@ -84,6 +84,24 @@ export function Preflight({ port }: Props) {
   const [debugTick, setDebugTick] = useState(0);
   const bootLineHandlerRef = useRef<((line: string) => void) | null>(null);
 
+  // ── Parsed boot telemetry ─────────────────────────────────
+  interface BootTelemetry {
+    v3v3_mv: number | null;
+    v5v_mv: number | null;
+    v9v_mv: number | null;
+    pressure_pa: number | null;
+    temp_c: number | null;
+    sd_free_mb: number | null;
+    sd_path: string | null;
+  }
+  const [bootTelemetry, setBootTelemetry] = useState<BootTelemetry>({
+    v3v3_mv: null, v5v_mv: null, v9v_mv: null,
+    pressure_pa: null, temp_c: null,
+    sd_free_mb: null, sd_path: null,
+  });
+  const [bootLogScroll, setBootLogScroll] = useState(0);
+  const BOOT_LOG_VISIBLE = 14;
+
   // Sub-check results for the detail view
   interface SubCheck { name: string; status: 'PASS' | 'FAIL'; detail: string }
   interface DetailResult { subchecks: SubCheck[]; running: boolean; error?: string }
@@ -115,12 +133,21 @@ export function Preflight({ port }: Props) {
     setBootError(null);
     setPadTelemetry(null);
     setBootCountdown(null);
+    setBootTelemetry({ v3v3_mv: null, v5v_mv: null, v9v_mv: null, pressure_pa: null, temp_c: null, sd_free_mb: null, sd_path: null });
+    setBootLogScroll(0);
     setPhase('booting');
 
     // Line parser for main.py boot output
     const handleBootLine = (line: string) => {
-      // Debug: capture last few lines so we can see what's arriving
-      setBootDebugLines((prev) => [...prev.slice(-29), line]);
+      // Capture serial output and auto-scroll to bottom
+      setBootDebugLines((prev) => {
+        const next = [...prev, line];
+        // Auto-scroll: keep scroll near bottom when new lines arrive
+        if (next.length > BOOT_LOG_VISIBLE) {
+          setBootLogScroll(Math.max(0, next.length - BOOT_LOG_VISIBLE));
+        }
+        return next;
+      });
 
       // Match [N/7] step lines
       const stepMatch = line.match(/^\[(\d)\/7\]\s+(.*)$/);
@@ -134,6 +161,38 @@ export function Preflight({ port }: Props) {
         setBootSteps((prev) =>
           prev.map((s) => s.step === num ? { ...s, status, detail: rest.trim() } : s)
         );
+
+        // Extract structured telemetry from specific steps
+        // [5/7] Power rails ... OK — 3V3=3300mV 5V=5061mV 9V=7813mV
+        const voltMatch = rest.match(/3V3=(\d+)mV.*5V=(\d+)mV.*9V=(\d+)mV/);
+        if (voltMatch) {
+          setBootTelemetry(prev => ({
+            ...prev,
+            v3v3_mv: parseInt(voltMatch[1]),
+            v5v_mv: parseInt(voltMatch[2]),
+            v9v_mv: parseInt(voltMatch[3]),
+          }));
+        }
+        // [4/7] Barometer ...  OK — 205339 Pa, 24.6°C
+        const baroMatch = rest.match(/(\d+)\s*Pa.*?([\d.]+)\s*°C/);
+        if (baroMatch) {
+          setBootTelemetry(prev => ({
+            ...prev,
+            pressure_pa: parseInt(baroMatch[1]),
+            temp_c: parseFloat(baroMatch[2]),
+          }));
+        }
+        // [3/7] SD card ...     OK — 7234 MB free → /sd/flight_068/flight.bin
+        const sdMatch = rest.match(/(\d+)\s*MB\s*free/);
+        const sdPathMatch = rest.match(/→\s*(.+)/);
+        if (sdMatch) {
+          setBootTelemetry(prev => ({
+            ...prev,
+            sd_free_mb: parseInt(sdMatch[1]),
+            sd_path: sdPathMatch ? sdPathMatch[1].trim() : prev.sd_path,
+          }));
+        }
+
         return;
       }
 
@@ -473,8 +532,16 @@ export function Preflight({ port }: Props) {
 
     if (input === 'q' || input === 'Q') exit();
 
-    // Boot phase: retry or go back to preflight
+    // Boot phase: retry, scroll, or go back to preflight
     if (phase === 'booting') {
+      if (_key.upArrow) {
+        setBootLogScroll(prev => Math.max(0, prev - 1));
+        return;
+      }
+      if (_key.downArrow) {
+        setBootLogScroll(prev => Math.min(Math.max(0, bootDebugLines.length - BOOT_LOG_VISIBLE), prev + 1));
+        return;
+      }
       if (input === 'r' || input === 'R') {
         // Clean up old listener and retry boot
         if (bootLineHandlerRef.current) {
@@ -533,7 +600,7 @@ export function Preflight({ port }: Props) {
     if ((input === 'g' || input === 'G') && phase === 'live') {
       setManualGo((prev) => !prev);
     }
-    if ((input === 'd' || input === 'D') && phase !== 'booting') {
+    if ((input === 'd' || input === 'D') && (phase as Phase) !== 'booting') {
       setShowDetail((prev) => !prev);
     }
     if ((input === 's' || input === 'S') && phase === 'live' && pico.connected) {
@@ -652,9 +719,31 @@ export function Preflight({ port }: Props) {
 
   // ── Booting phase view ──────────────────────────────────────
   if (phase === 'booting') {
-    const ledState = bootError ? 'solid-error' as const
-      : bootReady ? 'solid-ready' as const
-      : 'blink' as const;
+    const BOOT_LEFT_W = 58;
+    const BOOT_RIGHT_W = 60;
+    const bt = bootTelemetry;
+
+    // Map BootStep status to CheckItem status
+    const bootStepToCheckStatus = (s: BootStep['status']): CheckStatus => {
+      switch (s) {
+        case 'ok': return 'pass';
+        case 'fail': return 'fail';
+        case 'warn': return 'skip';
+        case 'pending': return 'pending';
+      }
+    };
+
+    // Find the first pending step to show as "running"
+    const firstPendingIdx = bootSteps.findIndex(s => s.status === 'pending');
+    const completedCount = bootSteps.filter(s => s.status !== 'pending').length;
+    const failedCount = bootSteps.filter(s => s.status === 'fail').length;
+
+    // Serial log scroll
+    const visibleLines = bootDebugLines.slice(bootLogScroll, bootLogScroll + BOOT_LOG_VISIBLE);
+    const canScrollUp = bootLogScroll > 0;
+    const canScrollDown = bootLogScroll < bootDebugLines.length - BOOT_LOG_VISIBLE;
+    // Auto-scroll to bottom when new lines arrive (if already near bottom)
+    const isNearBottom = bootLogScroll >= bootDebugLines.length - BOOT_LOG_VISIBLE - 2;
 
     return (
       <Box flexDirection="column" width={DASH_WIDTH + 2}>
@@ -673,51 +762,150 @@ export function Preflight({ port }: Props) {
         {bootReady && (
           <Box flexDirection="column">
             <Text backgroundColor="green" color="black" bold>
-              {'  \u2605  READY FOR FLIGHT — Board logging at 25Hz. Safe to disconnect USB.'.padEnd(DASH_WIDTH)}
+              {'  \u2605  FLIGHT READY'.padEnd(DASH_WIDTH)}
+            </Text>
+            <Text color="green" bold>
+              {'  Board logging at 25 Hz. Safe to disconnect USB.'}
             </Text>
             <Text>{' '}</Text>
           </Box>
         )}
 
         {!bootReady && !bootError && (
-          <Text color="yellow"> <Spinner type="dots" /> Pico is rebooting into flight mode...</Text>
-        )}
-
-        {bootCountdown !== null && !bootReady && !bootError && (
-          <Text color="yellow"> Proceeding despite warnings in {bootCountdown}s...</Text>
-        )}
-
-        <Text>{' '}</Text>
-
-        {/* Full-width serial log */}
-        <Panel title="SERIAL OUTPUT" width={DASH_WIDTH} borderColor={bootError ? 'red' : bootReady ? 'green' : 'yellow'}>
-          {bootDebugLines.length === 0 && (
-            <Text dimColor> Waiting for output...</Text>
-          )}
-          {bootDebugLines.map((line, i) => {
-            const isFatal = line.includes('FATAL') || line.includes('FAIL');
-            const isOk = line.includes('OK') || line.includes('[RDY]');
-            const isWarn = line.includes('WARN') || line.includes('retry');
-            const color = isFatal ? 'red' : isOk ? 'green' : isWarn ? 'yellow' : undefined;
-            return (
-              <Text key={i} color={color}>
-                {' '}{line}
-              </Text>
-            );
-          })}
-        </Panel>
-
-        {/* PAD telemetry when ready */}
-        {bootReady && padTelemetry && (
-          <>
+          <Box flexDirection="column">
+            <Text color="yellow"> <Spinner type="dots" /> Pico is rebooting into flight mode...</Text>
+            {bootCountdown !== null && (
+              <Text color="yellow"> Proceeding despite warnings in {bootCountdown}s...</Text>
+            )}
             <Text>{' '}</Text>
-            <Panel title="PAD TELEMETRY (1 Hz)" width={DASH_WIDTH} borderColor="green">
-              <Text> {padTelemetry}</Text>
-            </Panel>
-          </>
+          </Box>
         )}
 
-        <KeyBar keys={[['R', 'Retry Boot'], ['B', 'Back'], ['Q', 'Quit']]} width={DASH_WIDTH} />
+        {/* ══════════ TWO-COLUMN LAYOUT ══════════ */}
+        <Box flexDirection="row">
+
+          {/* ──── LEFT COLUMN: Boot Checks + Telemetry ──── */}
+          <Box flexDirection="column" width={BOOT_LEFT_W}>
+
+            {/* Boot Steps Panel */}
+            <Panel
+              title={`BOOT CHECKS  ${completedCount}/${bootSteps.length}${failedCount > 0 ? `  ${failedCount} failed` : ''}`}
+              width={BOOT_LEFT_W}
+              borderColor={bootError ? 'red' : bootReady ? 'green' : failedCount > 0 ? 'red' : 'yellow'}
+            >
+              {bootSteps.map((step, i) => {
+                const isCurrentlyRunning = !bootReady && !bootError && step.status === 'pending' && i === firstPendingIdx;
+                return (
+                  <CheckItem
+                    key={step.step}
+                    name={`${step.step}. ${step.label}`}
+                    status={isCurrentlyRunning ? 'running' : bootStepToCheckStatus(step.status)}
+                    detail={step.detail}
+                    maxWidth={BOOT_LEFT_W - 2}
+                  />
+                );
+              })}
+              {bootSteps.length === 0 && (
+                <Text dimColor> Waiting for boot output...</Text>
+              )}
+            </Panel>
+
+            <Text>{' '}</Text>
+
+            {/* Parsed Telemetry Panel */}
+            {(bt.pressure_pa !== null || bt.v3v3_mv !== null || bt.sd_free_mb !== null) && (
+              <Panel title="BOOT TELEMETRY" width={BOOT_LEFT_W} borderColor={bootReady ? 'green' : 'cyan'}>
+                {/* Barometer readings */}
+                {bt.pressure_pa !== null && (
+                  <>
+                    <Text>
+                      {' Pressure  '}
+                      <Text bold>{bt.pressure_pa.toFixed(0).padStart(7)}</Text>
+                      {' Pa'}
+                    </Text>
+                    <Text>
+                      {' Temp      '}
+                      <Text bold>{(bt.temp_c ?? 0).toFixed(1).padStart(7)}</Text>
+                      {' \u00b0C'}
+                    </Text>
+                  </>
+                )}
+                {/* SD card info */}
+                {bt.sd_free_mb !== null && (
+                  <Text>
+                    {' SD Free   '}
+                    <Text bold color={bt.sd_free_mb > 100 ? 'green' : 'yellow'}>{bt.sd_free_mb.toFixed(0).padStart(7)}</Text>
+                    {' MB'}
+                    {bt.sd_path && <Text dimColor>{'  '}{bt.sd_path}</Text>}
+                  </Text>
+                )}
+                {/* Voltage bars */}
+                {bt.v3v3_mv !== null && (
+                  <>
+                    <Text>{' '}</Text>
+                    <VoltageBar label="3V3" value={bt.v3v3_mv / 1000} rail="3V3" barWidth={16} />
+                    <VoltageBar label="5V " value={(bt.v5v_mv ?? 0) / 1000} rail="5V" barWidth={16} />
+                    <VoltageBar label="9V " value={(bt.v9v_mv ?? 0) / 1000} rail="9V" barWidth={16} />
+                  </>
+                )}
+              </Panel>
+            )}
+
+            {/* PAD telemetry when ready */}
+            {bootReady && padTelemetry && (
+              <>
+                <Text>{' '}</Text>
+                <Panel title="PAD TELEMETRY (1 Hz)" width={BOOT_LEFT_W} borderColor="green">
+                  <Text> {padTelemetry}</Text>
+                </Panel>
+              </>
+            )}
+
+          </Box>
+
+          {/* ──── 2-char gap ──── */}
+          <Box width={2}><Text>{'  '}</Text></Box>
+
+          {/* ──── RIGHT COLUMN: Serial Log ──── */}
+          <Box flexDirection="column" width={BOOT_RIGHT_W}>
+            <Panel
+              title={`SERIAL LOG${bootDebugLines.length > 0 ? `  (${bootDebugLines.length} lines)` : ''}`}
+              width={BOOT_RIGHT_W}
+              borderColor={bootError ? 'red' : bootReady ? 'green' : 'blue'}
+            >
+              {bootDebugLines.length === 0 && (
+                <Text dimColor> Waiting for output...</Text>
+              )}
+              {canScrollUp && (
+                <Text dimColor> {'  \u25B2 '}{bootLogScroll} lines above</Text>
+              )}
+              {visibleLines.map((line, i) => {
+                const isFatal = line.includes('FATAL') || line.includes('FAIL');
+                const isOk = line.includes('OK') || line.includes('[RDY]');
+                const isWarn = line.includes('WARN') || line.includes('retry');
+                const isStep = line.match(/^\[\d\/7\]/);
+                const color = isFatal ? 'red' : isOk ? 'green' : isWarn ? 'yellow' : undefined;
+                const lineNum = (bootLogScroll + i + 1).toString().padStart(3);
+                return (
+                  <Text key={bootLogScroll + i} color={color}>
+                    <Text dimColor>{lineNum} </Text>
+                    {isStep ? <Text bold>{line}</Text> : <Text>{line}</Text>}
+                  </Text>
+                );
+              })}
+              {canScrollDown && (
+                <Text dimColor> {'  \u25BC '}{bootDebugLines.length - bootLogScroll - BOOT_LOG_VISIBLE} lines below</Text>
+              )}
+              {/* Pad empty lines to keep panel height stable */}
+              {visibleLines.length < BOOT_LOG_VISIBLE && Array.from({ length: BOOT_LOG_VISIBLE - visibleLines.length - (canScrollUp ? 1 : 0) - (canScrollDown ? 1 : 0) - (bootDebugLines.length === 0 ? 1 : 0) }).map((_, i) => (
+                <Text key={`pad-${i}`}>{' '}</Text>
+              ))}
+            </Panel>
+          </Box>
+
+        </Box>
+
+        <KeyBar keys={[['R', 'Retry Boot'], ['B', 'Back'], ['\u2191\u2193', 'Scroll Log'], ['Q', 'Quit']]} width={DASH_WIDTH} />
       </Box>
     );
   }

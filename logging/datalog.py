@@ -9,6 +9,7 @@ Each flight gets its own folder on the SD card:
     /sd/flight_001/
         flight.bin       — binary telemetry frames
         preflight.txt    — preflight check results and metadata
+        boot.txt         — full boot serial output log
 
 Frame format (32 bytes, little-endian):
     u32  timestamp_ms
@@ -129,6 +130,19 @@ class FlightLogger:
             _try_sync()
         except Exception as e:
             print('[SD] Preflight write failed: {}'.format(e))
+
+    def write_boot_log(self, lines):
+        """Write captured boot serial output to the flight folder."""
+        if self._flight_dir is None:
+            return
+        try:
+            with open(self._flight_dir + '/boot.txt', 'w') as f:
+                for line in lines:
+                    f.write(line)
+                    f.write('\n')
+            _try_sync()
+        except Exception as e:
+            print('[SD] Boot log write failed: {}'.format(e))
 
     def write_frame(self, timestamp_ms, state, pressure_pa, temperature_c,
                     alt_raw, alt_filtered, vel_filtered,

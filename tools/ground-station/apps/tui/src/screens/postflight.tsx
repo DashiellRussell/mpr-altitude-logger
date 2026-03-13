@@ -570,6 +570,34 @@ function PostflightDashboard({ binFile, simFile }: DashboardProps) {
             }
           }
 
+          // Look for boot.txt — same search pattern as preflight.txt
+          const bootCandidates = [
+            join(resolve(binFile, '..'), 'boot.txt'),
+            binFile.replace(/[^/]+\.bin$/i, 'boot.txt'),
+          ];
+          if (existsSync('/Volumes')) {
+            try {
+              for (const vol of readdirSync('/Volumes')) {
+                const volPath = join('/Volumes', vol);
+                const match = basename(binFile, '.bin').match(/^.+?_(.+)$/);
+                if (match) {
+                  bootCandidates.push(join(volPath, match[1], 'boot.txt'));
+                }
+              }
+            } catch { /* skip */ }
+          }
+          for (const src of bootCandidates) {
+            if (existsSync(src)) {
+              try {
+                const content = readFileSync(src, 'utf-8');
+                if (content.length > 0) {
+                  writeFileSync(join(tmpFolder, 'boot.txt'), content);
+                  break;
+                }
+              } catch { /* skip binary/unreadable files */ }
+            }
+          }
+
           const zipPath = uniquePath(join(desktop, `${flightName}.zip`));
           execSync(`cd "${tmpBase}" && zip -r "${zipPath}" "${flightName}"`, { stdio: 'pipe' });
 
