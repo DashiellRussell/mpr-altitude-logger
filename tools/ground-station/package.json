@@ -6,7 +6,12 @@
     "dev:web": "pnpm --filter @mpr/web dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
-    "test:shared": "pnpm --filter @mpr/shared test"
+    "test:shared": "pnpm --filter @mpr/shared test",
+    "extract-sim": "bash scripts/extract-sim.sh",
+    "seed": "python3 ../../tools/seed_flight.py",
+    "seed:sd": "python3 ../../tools/seed_flight.py --sd",
+    "seed:verify": "python3 ../../tools/seed_flight.py --verify",
+    "deploy:pico": "bash scripts/deploy-pico.sh"
   },
   "devDependencies": {
     "typescript": "^5.4.0"
