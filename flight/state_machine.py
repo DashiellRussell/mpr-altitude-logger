@@ -1,17 +1,17 @@
 """
-Flight state machine — automatic phase detection and deployment logic.
+Flight state machine — automatic phase detection for data logging.
 
 States:
     PAD     → sitting on the pad, recording ground reference
     BOOST   → motor burning, rapid altitude gain
     COAST   → motor burnout, still ascending
     APOGEE  → peak altitude detected
-    DROGUE  → drogue deployed, descending fast
-    MAIN    → main chute deployed (altitude trigger)
-    LANDED  → on the ground, buzzer active for recovery
+    DROGUE  → descending under drogue chute
+    MAIN    → under main chute (altitude trigger)
+    LANDED  → on the ground
 
+All states are tracked for logging purposes only — no deployment hardware.
 Transitions are based on Kalman-filtered altitude and velocity.
-No accelerometer needed — the Kalman velocity estimate is enough.
 """
 
 import time
@@ -33,12 +33,11 @@ STATE_NAMES = ["PAD", "BOOST", "COAST", "APOGEE", "DROGUE", "MAIN", "LANDED"]
 class FlightStateMachine:
     """
     Determines current flight phase from filtered sensor data.
-    All deployment decisions go through here.
+    All states are for logging — no deployment actions.
     """
 
     def __init__(self):
         self.state = PAD
-        self.armed = False
 
         # Tracking
         self.ground_alt = 0.0
@@ -53,34 +52,22 @@ class FlightStateMachine:
         self._launch_alt_start = 0.0
         self._launch_time_start = 0
 
-        # Deployment flags
-        self.drogue_fired = False
-        self.main_fired = False
-
     def set_ground_reference(self, alt):
         """Set ground-level altitude (call after averaging on pad)."""
         self.ground_alt = alt
 
-    def set_armed(self, armed):
-        """Arm/disarm deployment. Physical switch should gate this."""
-        self.armed = armed
-
     def update(self, alt, vel, now_ms):
         """
         Run state machine with latest filtered data.
-        
+
         Args:
             alt: Kalman-filtered altitude AGL (m)
             vel: Kalman-filtered vertical velocity (m/s, positive=up)
             now_ms: current time in ms (time.ticks_ms)
-            
-        Returns:
-            (state, deploy_drogue, deploy_main)
-            deploy flags are True only on the transition tick
-        """
-        deploy_drogue = False
-        deploy_main = False
 
+        Returns:
+            state (int)
+        """
         # Track maxima
         if alt > self.max_alt:
             self.max_alt = alt
@@ -90,8 +77,8 @@ class FlightStateMachine:
         agl = alt - self.ground_alt
 
         if self.state == PAD:
-            # Detect launch: sustained altitude gain
-            if agl > config.LAUNCH_ACCEL_THRESHOLD:
+            # Detect launch: sustained altitude gain AND velocity above threshold
+            if agl > config.LAUNCH_ALT_THRESHOLD and vel > config.LAUNCH_VEL_THRESHOLD:
                 if self._launch_time_start == 0:
                     self._launch_time_start = now_ms
                 elif time.ticks_diff(now_ms, self._launch_time_start) > config.LAUNCH_DETECT_WINDOW * 1000:
@@ -101,8 +88,16 @@ class FlightStateMachine:
                 self._launch_time_start = 0
 
         elif self.state == BOOST:
-            # Detect burnout: velocity drops significantly from peak
-            if self.max_vel > 0 and vel < self.max_vel - config.COAST_VEL_THRESHOLD:
+            # False launch recovery: if velocity drops to near-zero early in "boost", reset to PAD
+            if time.ticks_diff(now_ms, self.launch_time) < config.BOOST_RECOVERY_WINDOW * 1000:
+                if vel < config.BOOST_RECOVERY_VEL:
+                    self.state = PAD
+                    self.launch_time = 0
+                    self.max_alt = 0.0
+                    self.max_vel = 0.0
+                    self._launch_time_start = 0
+            # Normal burnout detection (only after recovery window closes)
+            elif self.max_vel > 0 and vel < self.max_vel - config.COAST_VEL_THRESHOLD:
                 self.state = COAST
 
         elif self.state == COAST:
@@ -112,10 +107,6 @@ class FlightStateMachine:
                 if self._apogee_count >= config.APOGEE_CONFIRM_COUNT:
                     self.state = APOGEE
                     self.apogee_time = now_ms
-                    # Fire drogue
-                    if self.armed and not self.drogue_fired:
-                        deploy_drogue = True
-                        self.drogue_fired = True
             else:
                 self._apogee_count = 0
 
@@ -124,12 +115,9 @@ class FlightStateMachine:
             self.state = DROGUE
 
         elif self.state == DROGUE:
-            # Detect main deployment altitude
-            if agl <= config.MAIN_DEPLOY_ALT and vel < 0:
+            # Detect main chute altitude (logging-only threshold)
+            if agl <= config.MAIN_CHUTE_ALT and vel < 0:
                 self.state = MAIN
-                if self.armed and not self.main_fired:
-                    deploy_main = True
-                    self.main_fired = True
 
         elif self.state == MAIN:
             # Detect landing: near-zero velocity for sustained period
@@ -142,9 +130,9 @@ class FlightStateMachine:
                 self._landed_start = 0
 
         elif self.state == LANDED:
-            pass  # Terminal state — buzzer handled externally
+            pass  # Terminal state
 
-        return self.state, deploy_drogue, deploy_main
+        return self.state
 
     @property
     def state_name(self):
@@ -156,6 +144,4 @@ class FlightStateMachine:
             "max_alt_m": self.max_alt - self.ground_alt,
             "max_vel_ms": self.max_vel,
             "state": self.state_name,
-            "drogue_fired": self.drogue_fired,
-            "main_fired": self.main_fired,
         }

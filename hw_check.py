@@ -16,7 +16,7 @@ Wiring expected (edit pins below if different):
     BMP180:  SDA=GP4, SCL=GP5 (I2C0) — GY-68 breakout
     SD Card: MISO=GP16, MOSI=GP19, SCK=GP18, CS=GP17 (SPI0)
     V_3V3:   GP28 (ADC2) direct — 3.3V rail
-    V_5V:    GP26 (ADC0) through 1k/1k voltage divider
+    V_5V:    GP26 (ADC0) through 500Ω/680Ω voltage divider
     V_9V:    GP27 (ADC1) through 2k/1k voltage divider
     LED:     GP25 (onboard)
 """
@@ -45,7 +45,7 @@ ADC_3V = 28           # GP28 (A2) — 3.3V rail (direct, no divider)
 ADC_5V = 26           # GP26 (A0) — 5V rail
 ADC_9V = 27           # GP27 (A1) — 9V rail
 VDIV_3V = 1.0         # direct — 3.3V within ADC range
-VDIV_5V = 2.0         # voltage divider — see schematic
+VDIV_5V = 1.735       # voltage divider — R1∥R2 (500Ω) + R3 (680Ω), V_tap=2.88V
 VDIV_9V = 3.0         # 2k/1k divider
 
 LED_PIN = 25
