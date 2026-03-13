@@ -540,6 +540,8 @@ function PostflightDashboard({ binFile, simFile }: DashboardProps) {
             generateFlightReport(frames, stats, version, basename(binFile), sim));
 
           // Look for preflight.txt — could be alongside local copy or on the SD card
+          // Strip " (N)" dedup suffix from basename for SD card folder matching
+          const cleanName = basename(binFile, '.bin').replace(/\s*\(\d+\)$/, '');
           const preflightCandidates = [
             join(resolve(binFile, '..'), 'preflight.txt'),          // same dir as local .bin
             binFile.replace(/[^/]+\.bin$/i, 'preflight.txt'),       // replace filename
@@ -550,7 +552,7 @@ function PostflightDashboard({ binFile, simFile }: DashboardProps) {
               for (const vol of readdirSync('/Volumes')) {
                 const volPath = join('/Volumes', vol);
                 // Try matching folder names from the bin filename
-                const match = basename(binFile, '.bin').match(/^.+?_(.+)$/);
+                const match = cleanName.match(/^.+?_(.+)$/);
                 if (match) {
                   preflightCandidates.push(join(volPath, match[1], 'preflight.txt'));
                 }
@@ -579,7 +581,7 @@ function PostflightDashboard({ binFile, simFile }: DashboardProps) {
             try {
               for (const vol of readdirSync('/Volumes')) {
                 const volPath = join('/Volumes', vol);
-                const match = basename(binFile, '.bin').match(/^.+?_(.+)$/);
+                const match = cleanName.match(/^.+?_(.+)$/);
                 if (match) {
                   bootCandidates.push(join(volPath, match[1], 'boot.txt'));
                 }
