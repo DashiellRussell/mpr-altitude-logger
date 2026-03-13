@@ -6,7 +6,7 @@ You are working on MPR Altitude Logger — a dual-core Raspberry Pi Pico (RP2040
 
 - **Owner**: Dash (Engineering/Science student, UNSW Sydney)
 - **Team**: UNSW Rocketry — building avionics boards for competition rockets
-- **Hardware**: Raspberry Pi Pico (RP2040, dual Cortex-M0+, 264KB RAM), BMP280 barometer, 8GB SD card (SPI), buck/boost converters for 3.3V/5V/9V rails, piezo buzzer, physical ARM switch, deployment e-match output
+- **Hardware**: Raspberry Pi Pico (RP2040, dual Cortex-M0+, 264KB RAM), BMP280 barometer, 8GB SD card (SPI), buck/boost converters for 3.3V/5V/9V rails, onboard LED
 - **Runtime**: MicroPython v1.22+ on bare metal RP2040
 - **Competition context**: Australian Universities Rocketry Challenge (AURC) 2026
 
@@ -14,11 +14,13 @@ You are working on MPR Altitude Logger — a dual-core Raspberry Pi Pico (RP2040
 
 ```
 Core 0 (time-critical, 25 Hz):
-  Sensor read → Kalman filter → State machine → SD card log
+  Preflight checks → Sensor read → Kalman filter → State machine → SD card log
 
 Core 1 (slower, ~20 Hz):
-  Deployment pulse mgmt → LED patterns → Buzzer → Recovery beacon
+  LED status patterns (blink = running, solid = error)
 ```
+
+This is a **pure data logger** — no deployment hardware, no buzzer, no ARM switch. All flight states are tracked for logging only.
 
 Flight states: `PAD → BOOST → COAST → APOGEE → DROGUE → MAIN → LANDED`
 
@@ -37,12 +39,12 @@ avionics/
 │   └── power.py              # ADC voltage rail monitoring
 ├── flight/
 │   ├── kalman.py             # 1D Kalman filter (altitude + velocity state)
-│   └── state_machine.py      # Flight phase detection + deployment logic
+│   └── state_machine.py      # Flight phase detection (logging only, no deployment)
 ├── logging/
 │   ├── datalog.py            # Binary frame logger (28-byte frames, sync headers)
 │   └── sdcard_mount.py       # SD card SPI mount/unmount
 ├── utils/
-│   └── hardware.py           # LED, buzzer, deploy channel, ARM switch
+│   └── hardware.py           # LED status patterns
 └── tools/                    # Laptop-side Python 3 scripts (NOT for Pico)
     ├── decode_log.py         # Binary .bin → CSV + matplotlib plots
     ├── simulate.py           # 1D Euler flight sim with drag/atmosphere
@@ -63,13 +65,14 @@ There is also a React dashboard artifact (`flight-review-dashboard.jsx`) for int
 - **ADC is 12-bit but `read_u16()` returns 16-bit** — MicroPython scales it. Voltage divider ratios in `config.py` must match actual resistors on the board.
 
 ### Binary Log Format
-Each frame = 2 sync bytes + 28 data bytes:
+Each frame = 2 sync bytes + 32 data bytes (v2):
 ```
 Sync:    \xAA\x55
 Frame:   u32 timestamp_ms | u8 state | f32 pressure_pa | f32 temperature_c |
          f32 alt_raw_m | f32 alt_filtered_m | f32 vel_filtered_ms |
-         u16 v_batt_mv | u8 flags
+         u16 v_3v3_mv | u16 v_5v_mv | u16 v_9v_mv | u8 flags
 ```
+Flags byte: bit3=error, bits 0-2 reserved (legacy, always 0).
 File header: `RKTLOG` (6B) + u16 version + u16 frame_size = 10 bytes.
 
 ### Kalman Filter
@@ -80,10 +83,18 @@ Process noise (`Q`) and measurement noise (`R`) in `config.py` are the main tuni
 - Higher `KALMAN_R_ALT` = trust the model more, trust barometer less
 - Tune on the ground by logging raw vs filtered while shaking the board
 
-### State Machine Safety
-- Deployment ONLY fires if: (a) state machine says to, AND (b) physical ARM switch is closed, AND (c) hasn't already fired
-- Deploy pin is active HIGH, held LOW at boot by `Pin(OUT, value=0)`, with a timed auto-shutoff (`DEPLOY_PULSE_MS`)
-- `hw_check.py` tests the deploy pin as INPUT with pull-down — never drives it HIGH during testing
+### State Tracking
+All flight states (PAD→BOOST→COAST→APOGEE→DROGUE→MAIN→LANDED) are tracked for logging only. No deployment hardware exists on this board — state transitions are recorded to SD for post-flight analysis.
+
+**Launch detection (PAD→BOOST)** requires altitude gain > 15m AND velocity > 10 m/s, both sustained for 0.5s. This two-gate approach prevents false triggers from walking, stairs, wind gusts, or board handling.
+
+**False launch recovery**: If BOOST is entered but velocity drops below 3 m/s within the first 2 seconds, the state machine resets to PAD (with maxima cleared). After 2s, normal burnout detection takes over.
+
+### SD Card Protection
+- `os.sync()` called after every periodic flush to force FAT metadata to disk
+- State transitions trigger immediate flush+sync (captures critical moments)
+- Write failures set `_sd_failed` flag — sensor loop continues without crashing
+- Auto-incrementing filenames prevent restart data overwrites
 
 ### OpenRocket Integration
 The importer (`tools/openrocket_import.py`) handles:
@@ -101,10 +112,11 @@ The importer (`tools/openrocket_import.py`) handles:
 3. Fix any FAIL results before proceeding
 
 ### Phase 2: Flight Computer Load
-1. Copy entire `avionics/` folder to Pico root
+1. Copy all source folders to Pico root
 2. Copy `main.py` to Pico root
 3. Ensure `sdcard.py` driver is on the Pico filesystem
-4. Ground test: `import ground_test; ground_test.run()`
+4. Boot → preflight checks run automatically → enters flight mode
+5. LED feedback: slow blink = ready, solid = error
 
 ### Phase 3: Pre-Flight Simulation
 ```bash
@@ -127,7 +139,7 @@ python tools/decode_log.py flight.bin --plot
 - **Laptop-side tools** (`tools/`): standard Python 3, type hints welcome, can use matplotlib/numpy but keep them optional imports with helpful error messages.
 - **Config changes**: all tunable values go in `config.py`, never hardcode thresholds in logic files.
 - **Comments**: docstrings on all classes/functions. Inline comments for non-obvious hardware interactions or RP2040 gotchas.
-- **Safety-critical code**: any change to `state_machine.py`, deployment logic in `hardware.py`, or the ARM switch handling must be explicitly flagged and reviewed. Never bypass the ARM check.
+- **Safety-critical code**: any change to `state_machine.py` state transitions or SD logging should be carefully reviewed to avoid data loss.
 
 ## Common Tasks You May Be Asked To Do
 
@@ -170,12 +182,10 @@ python tools/decode_log.py flight.bin --plot
 ## What NOT To Do
 
 - **Never put the full flight computer on the Pico without running `hw_check.py` first**
-- **Never test deploy pin by driving it HIGH with an e-match connected**
 - **Never use `time.sleep()` in Core 0's sensor loop** — it breaks the timing. Use spin-wait with `ticks_diff`.
 - **Never allocate memory in the hot loop** — no string formatting, no list appends, no dict creation per frame
 - **Never `import` inside a loop** — MicroPython import is slow
 - **Never assume the SD card write succeeded** — check for exceptions, the card can fail mid-flight from vibration
-- **Never bypass the ARM switch check** for deployment, even in testing
 - **Don't use asyncio** — it adds overhead and complexity for no benefit in this two-core architecture
 - **Don't add network/WiFi code** to the flight firmware — it's a distraction and potential failure mode in flight
 
