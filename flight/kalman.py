@@ -110,6 +110,12 @@ class AltitudeKalman:
         self.p10 = pp10 - k1 * pp00
         self.p11 = pp11 - k1 * pp01
 
+        # Clamp diagonal covariance to prevent numerical instability
+        if self.p00 < 0.0:
+            self.p00 = 0.0
+        if self.p11 < 0.0:
+            self.p11 = 0.0
+
         return self.x_alt, self.x_vel
 
     @property

@@ -49,6 +49,8 @@ class FlightStateMachine:
 
         # Detection counters
         self._apogee_count = 0
+        self._apogee_dwell = 0
+        self._recovery_count = 0
         self._landed_start = 0
         self._launch_alt_start = 0.0
         self._launch_time_start = 0
@@ -92,14 +94,19 @@ class FlightStateMachine:
                 self._launch_time_start = 0
 
         elif self.state == BOOST:
-            # False launch recovery: if altitude drops back near ground early in "boost"
+            # False launch recovery: sustained low altitude early in "boost"
             if time.ticks_diff(now_ms, self.launch_time) < config.BOOST_RECOVERY_WINDOW * 1000:
                 if agl < config.BOOST_RECOVERY_ALT:
-                    self.state = PAD
-                    self.launch_time = 0
-                    self.max_alt = 0.0
-                    self.max_vel = 0.0
-                    self._launch_time_start = 0
+                    self._recovery_count += 1
+                    if self._recovery_count >= config.BOOST_RECOVERY_COUNT:
+                        self.state = PAD
+                        self.launch_time = 0
+                        self.max_alt = 0.0
+                        self.max_vel = 0.0
+                        self._launch_time_start = 0
+                        self._recovery_count = 0
+                else:
+                    self._recovery_count = 0
             # Normal burnout detection (only after recovery window closes)
             elif self.max_vel > 0 and vel < self.max_vel - config.COAST_VEL_THRESHOLD:
                 self.state = COAST
@@ -120,8 +127,10 @@ class FlightStateMachine:
                 self.apogee_time = now_ms
 
         elif self.state == APOGEE:
-            # Transition to descent immediately
-            self.state = DROGUE
+            # Dwell in APOGEE for a few frames before transitioning
+            self._apogee_dwell += 1
+            if self._apogee_dwell >= config.APOGEE_DWELL_FRAMES:
+                self.state = DROGUE
 
         elif self.state == DROGUE:
             # Transition to MAIN at fraction of max altitude AGL (works for any apogee height)
