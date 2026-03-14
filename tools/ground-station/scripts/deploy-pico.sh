@@ -51,6 +51,7 @@ DIRS=(
   flight
   logging
   utils
+  pico_diag
 )
 
 cd "$REPO_ROOT"
@@ -99,6 +100,41 @@ for dir in "${DIRS[@]}"; do
 done
 
 eval $CMD
+
+echo ""
+
+# Step 3: Verify critical modules load on-device
+echo "Verifying deployment..."
+VERIFY_PY="
+import gc, sys
+errors = []
+for mod in ['config', 'sensors.barometer', 'sensors.power', 'flight.kalman',
+            'flight.state_machine', 'logging.datalog', 'pico_diag']:
+    try:
+        __import__(mod)
+        print('  OK  ' + mod)
+    except Exception as e:
+        print('  FAIL ' + mod + ': ' + str(e))
+        errors.append(mod)
+    # unload to save RAM for next import
+    for k in list(sys.modules.keys()):
+        if k.startswith(mod.split('.')[0]):
+            del sys.modules[k]
+    gc.collect()
+if errors:
+    print('VERIFY_FAIL')
+else:
+    print('VERIFY_OK')
+"
+
+VERIFY_OUT=$(mpremote $PORT_ARGS exec "$VERIFY_PY" 2>&1) || true
+echo "$VERIFY_OUT"
+
+if echo "$VERIFY_OUT" | grep -q "VERIFY_FAIL"; then
+  echo ""
+  echo "WARNING: Some modules failed to load on-device. Check errors above."
+  exit 1
+fi
 
 echo ""
 # Show deployed version (macOS-compatible grep)
