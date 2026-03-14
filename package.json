@@ -1,0 +1,12 @@
+{
+  "name": "mpr-altitude-logger",
+  "private": true,
+  "scripts": {
+    "dev:tui": "python3 tools/launch.py",
+    "simulator": "python3 tools/simulator_tui.py",
+    "test": "cd /tmp && python3 -m pytest tests/ -v",
+    "test:integration": "cd /tmp && python3 -m pytest tests/test_integration.py -v",
+    "pico": "python3 tools/pico_diag_tui.py",
+    "pico:diag": "python3 tools/pico_diag_tui.py"
+  }
+}
