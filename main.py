@@ -22,7 +22,7 @@ import sys
 import os
 import time
 import struct
-from machine import SoftI2C, Pin, freq
+from machine import SoftI2C, Pin, freq, WDT
 import _thread
 
 import config
@@ -39,6 +39,7 @@ from utils.hardware import StatusLED, LED_PATTERNS
 _current_state = PAD
 _landed = False
 _error_mode = False  # solid LED = error
+_preflight_warning = False  # proceeding despite errors
 
 # ── Boot log capture ────────────────────────────────────────
 _boot_log = []
@@ -55,7 +56,7 @@ def core1_task():
 
     Runs in a slower loop (~20 Hz). Reads shared state set by Core 0.
     """
-    global _current_state, _landed, _error_mode
+    global _current_state, _landed, _error_mode, _preflight_warning
 
     led = StatusLED()
     led.set_pattern([250, 250])  # fast blink = preflight running
@@ -74,11 +75,15 @@ def core1_task():
         # Update LED pattern on state change
         if _current_state != last_state:
             last_state = _current_state
-            pattern = LED_PATTERNS.get(_current_state)
-            if pattern is None:
-                led.on()
+            # Distinct pattern on PAD if proceeding despite preflight errors
+            if _preflight_warning and _current_state == PAD:
+                led.set_pattern([200, 200, 200, 1000])
             else:
-                led.set_pattern(pattern)
+                pattern = LED_PATTERNS.get(_current_state)
+                if pattern is None:
+                    led.on()
+                else:
+                    led.set_pattern(pattern)
 
         led.tick(now)
         time.sleep_ms(50)  # ~20 Hz
@@ -88,7 +93,7 @@ def core0_main():
     """
     Core 0: preflight → sensor loop → filter → state machine → logger.
     """
-    global _current_state, _landed, _error_mode
+    global _current_state, _landed, _error_mode, _preflight_warning
 
     blog("\n╔══════════════════════════════════════════╗")
     blog("║   UNSW ROCKETRY — MPR ALTITUDE LOGGER    ║")
@@ -105,6 +110,9 @@ def core0_main():
     blog("  Triple flash     = LANDED — data saved")
     blog("")
 
+    # ── Config validation ───────────────────────────────
+    config.validate()
+
     # ── Overclock for headroom ────────────────────────
     freq(200_000_000)
     blog(f"[1/7] Overclock        {freq() // 1_000_000} MHz")
@@ -112,6 +120,9 @@ def core0_main():
     # ── Start Core 1 early so LED works during preflight ──
     _thread.start_new_thread(core1_task, ())
     blog("[2/7] LED started      slow blink = preflight running")
+
+    # ── Hardware watchdog (5s timeout) ──────────────────
+    wdt = WDT(timeout=5000)
 
     # ── Preflight checks ──────────────────────────────
     preflight_errors = []
@@ -121,6 +132,7 @@ def core0_main():
     blog(f"[{step}/7] SD card ...", end="")
     sd_mounted = False
     for attempt in range(3):
+        wdt.feed()
         if mount_sd():
             sd_mounted = True
             break
@@ -143,9 +155,10 @@ def core0_main():
     baro = None
     last_baro_err = None
     for attempt in range(3):
+        wdt.feed()
         try:
             i2c = SoftI2C(sda=Pin(config.I2C_SDA), scl=Pin(config.I2C_SCL),
-                          freq=config.I2C_FREQ)
+                          freq=config.I2C_FREQ, timeout=config.I2C_TIMEOUT_US)
             baro = BMP180(i2c, config.BMP180_ADDR)
             p, t = baro.read()
             blog(f"  OK — {p:.0f} Pa, {t:.1f}°C")
@@ -201,9 +214,11 @@ def core0_main():
         blog("╚══════════════════════════════════════════╝")
         if not manual_override:
             for countdown in range(10, 0, -1):
+                wdt.feed()
                 blog(f"  {countdown}...")
                 time.sleep(1)
         _error_mode = False
+        _preflight_warning = True
         blog("  Proceeding despite errors.")
         blog("")
 
@@ -215,17 +230,16 @@ def core0_main():
         blog("        Power cycle after inserting SD card.")
         _error_mode = True
         while True:
+            wdt.feed()
             time.sleep(1)
 
     if baro is None:
-        if manual_override:
-            blog("[WARN] Barometer failed — flying blind (manual override)")
-        else:
-            blog("[FATAL] Cannot fly without barometer. LED will stay solid.")
-            blog("        Check I2C wiring and power cycle.")
-            _error_mode = True
-            while True:
-                time.sleep(1)
+        blog("[FATAL] Cannot fly without barometer. LED will stay solid.")
+        blog("        Check I2C wiring and power cycle.")
+        _error_mode = True
+        while True:
+            wdt.feed()
+            time.sleep(1)
 
     # Ground calibration
     ground_pressure = 101325.0  # default sea level if baro failed
@@ -233,6 +247,7 @@ def core0_main():
         blog(f"[{step}/7] Calibrating ...", end="")
         pressure_sum = 0.0
         for i in range(config.GROUND_SAMPLES):
+            wdt.feed()
             p, t = baro.read()
             pressure_sum += p
             time.sleep_ms(20)
@@ -251,9 +266,16 @@ def core0_main():
     logger = None
     log_file = 'NONE'
     if sd_ok:
-        logger = FlightLogger(flush_every=config.LOG_FLUSH_EVERY)
-        log_file = logger.open()
-        blog(f"[{step}/7] Logger open   {log_file}")
+        try:
+            logger = FlightLogger(flush_every=config.LOG_FLUSH_EVERY,
+                                  sync_every=config.LOG_SYNC_EVERY)
+            log_file = logger.open()
+            blog(f"[{step}/7] Logger open   {log_file}")
+        except Exception as e:
+            logger = None
+            log_file = 'NONE'
+            _error_mode = True
+            blog(f"[{step}/7] Logger open   FAIL — {e}")
     else:
         blog(f"[{step}/7] Logger open   SKIP — no SD card")
 
@@ -311,6 +333,16 @@ def core0_main():
     loop_count = 0
     prev_state = PAD
 
+    # Pre-allocate defaults for error frame logging
+    pressure = 0.0
+    temperature = 0.0
+    alt_raw = 0.0
+    alt_filt = 0.0
+    vel_filt = 0.0
+    v3 = 0
+    v5 = 0
+    v9 = 0
+
     while True:
         now_us = time.ticks_us()
         dt_us = time.ticks_diff(now_us, last_time)
@@ -323,87 +355,106 @@ def core0_main():
         now_ms = time.ticks_ms()
         dt = dt_us / 1_000_000.0  # seconds
 
-        # ── Read sensors ──────────────────────────
-        if baro is None:
-            time.sleep_ms(50)
+        wdt.feed()
+
+        try:
+            # ── Read sensors ──────────────────────────
+            pressure, temperature = baro.read()
+            alt_raw = pressure_to_altitude(pressure, ground_pressure)
+
+            # ── Kalman filter ─────────────────────────
+            alt_filt, vel_filt = kalman.update(alt_raw, dt)
+
+            # ── State machine ─────────────────────────
+            state = fsm.update(alt_filt, vel_filt, now_ms)
+
+            # Set shared state for Core 1
+            _current_state = state
+            if state == LANDED:
+                _landed = True
+
+            # Flush on state transitions
+            if state != prev_state:
+                if logger is not None:
+                    logger.notify_state_change(state)
+                prev_state = state
+
+            # ── Build flags byte ──────────────────────
+            flags = 0
+            if logger is not None and logger.sd_failed:
+                flags |= 0x08  # error flag
+                _error_mode = True  # solid LED = SD card lost
+
+            # ── Log to SD ────────────────────────────
+            v3, v5, v9 = power.read_all()
+            if logger is not None:
+                logger.write_frame(
+                    timestamp_ms=now_ms,
+                    state=state,
+                    pressure_pa=pressure,
+                    temperature_c=temperature,
+                    alt_raw=alt_raw,
+                    alt_filtered=alt_filt,
+                    vel_filtered=vel_filt,
+                    v_3v3_mv=v3,
+                    v_5v_mv=v5,
+                    v_9v_mv=v9,
+                    flags=flags,
+                )
+
+            # ── Console output (1 Hz) ────────────────
+            loop_count += 1
+            if time.ticks_diff(now_ms, last_print) >= 1000:
+                hz = loop_count
+                loop_count = 0
+                last_print = now_ms
+                frames = logger.frames_written if logger is not None else 0
+                print(
+                    f"[{STATE_NAMES[state]:7s}] "
+                    f"alt={alt_filt:7.1f}m  vel={vel_filt:+6.1f}m/s  "
+                    f"P={pressure:.0f}Pa  T={temperature:.1f}°C  "
+                    f"3V3={v3}mV  "
+                    f"{hz}Hz  #{frames}"
+                )
+
+            # ── Post-landing shutdown ─────────────────
+            if state == LANDED and time.ticks_diff(now_ms, fsm.apogee_time) > 30_000:
+                # 30s after apogee (well after landing), close the file
+                stats = fsm.get_stats()
+                print(f"\n[LANDED] Flight complete!")
+                print(f"  Max altitude: {stats['max_alt_m']:.1f} m AGL")
+                print(f"  Max velocity: {stats['max_vel_ms']:.1f} m/s")
+                if logger is not None:
+                    print(f"  Frames logged: {logger.frames_written}")
+                    try:
+                        logger.close()
+                        print("[LOG] File closed. Safe to remove SD card.")
+                    except Exception:
+                        print("[LOG] File close failed — data may be incomplete.")
+                else:
+                    print("  No SD logging was active.")
+                # Keep running for LED feedback (triple flash = landed)
+                while True:
+                    wdt.feed()
+                    time.sleep(1)
+
+        except Exception:
+            # Sensor/filter/FSM error — log error frame and continue
+            if logger is not None:
+                logger.write_frame(
+                    timestamp_ms=now_ms,
+                    state=prev_state,
+                    pressure_pa=0.0,
+                    temperature_c=0.0,
+                    alt_raw=0.0,
+                    alt_filtered=0.0,
+                    vel_filtered=0.0,
+                    v_3v3_mv=0,
+                    v_5v_mv=0,
+                    v_9v_mv=0,
+                    flags=0x08,
+                )
             continue
-        pressure, temperature = baro.read()
-        alt_raw = pressure_to_altitude(pressure, ground_pressure)
-
-        # ── Kalman filter ─────────────────────────
-        alt_filt, vel_filt = kalman.update(alt_raw, dt)
-
-        # ── State machine ─────────────────────────
-        state = fsm.update(alt_filt, vel_filt, now_ms)
-
-        # Set shared state for Core 1
-        _current_state = state
-        if state == LANDED:
-            _landed = True
-
-        # Flush on state transitions
-        if state != prev_state:
-            if logger is not None:
-                logger.notify_state_change(state)
-            prev_state = state
-
-        # ── Build flags byte ──────────────────────
-        flags = 0
-        if logger is not None and logger.sd_failed:
-            flags |= 0x08  # error flag
-            _error_mode = True  # solid LED = SD card lost
-
-        # ── Log to SD ────────────────────────────
-        v3, v5, v9 = power.read_all()
-        if logger is not None:
-            logger.write_frame(
-                timestamp_ms=now_ms,
-                state=state,
-                pressure_pa=pressure,
-                temperature_c=temperature,
-                alt_raw=alt_raw,
-                alt_filtered=alt_filt,
-                vel_filtered=vel_filt,
-                v_3v3_mv=v3,
-                v_5v_mv=v5,
-                v_9v_mv=v9,
-                flags=flags,
-            )
-
-        # ── Console output (1 Hz) ────────────────
-        loop_count += 1
-        if time.ticks_diff(now_ms, last_print) >= 1000:
-            hz = loop_count
-            loop_count = 0
-            last_print = now_ms
-            frames = logger.frames_written if logger is not None else 0
-            print(
-                f"[{STATE_NAMES[state]:7s}] "
-                f"alt={alt_filt:7.1f}m  vel={vel_filt:+6.1f}m/s  "
-                f"P={pressure:.0f}Pa  T={temperature:.1f}°C  "
-                f"3V3={v3}mV  "
-                f"{hz}Hz  #{frames}"
-            )
-
-        # ── Post-landing shutdown ─────────────────
-        if state == LANDED and time.ticks_diff(now_ms, fsm.apogee_time) > 30_000:
-            # 30s after apogee (well after landing), close the file
-            stats = fsm.get_stats()
-            print(f"\n[LANDED] Flight complete!")
-            print(f"  Max altitude: {stats['max_alt_m']:.1f} m AGL")
-            print(f"  Max velocity: {stats['max_vel_ms']:.1f} m/s")
-            if logger is not None:
-                print(f"  Frames logged: {logger.frames_written}")
-                try:
-                    logger.close()
-                    print("[LOG] File closed. Safe to remove SD card.")
-                except Exception:
-                    print("[LOG] File close failed — data may be incomplete.")
-            else:
-                print("  No SD logging was active.")
-            # Keep running for LED feedback (triple flash = landed)
-            while True:
-                time.sleep(1)
 
 
 # ── Entry point ───────────────────────────────────────────
