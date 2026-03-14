@@ -345,36 +345,111 @@ There's also a `StatusLED` class with a manual `tick()` method for testing conte
 
 ---
 
-## The Test Suite — 102 Tests for Code That Runs on a Chip With No Test Runner
+## 102 Tests, a Simulated Pico, and a Fault Injection Framework
 
-The test suite (`tests/`) contains 102 test functions across 2,913 lines, testing a system that ultimately runs on a $4 microcontroller with no way to execute pytest.
+The test suite contains **102 test functions** across **2,913 lines of test code** — for firmware that runs on a $4 microcontroller with no way to execute pytest. The RP2040 has no test runner. So the team built a simulated one.
 
-The `sim_harness.py` (435 lines) builds a complete simulated Pico environment. It mocks `machine`, `time.ticks_ms`, the I2C bus, and the SD card filesystem to run the full `sensor → Kalman → FSM → logger` pipeline on a laptop:
+### The Simulated Pico Environment
 
-- `from_simulate()` — wraps the physics simulator output as synthetic sensor data
-- `from_pressure_sequence()` — feed arbitrary pressure arrays
-- `noise_overlay()` — adds Gaussian noise to clean profiles
-- `sensor_dropout()` — simulates intermittent I2C failures
-- `pressure_spike()` — injects glitches to test filter robustness
-- `gradual_drift()` — slow barometric drift during flight
-- `stuck_sensor()` — sensor returns same value forever
-- `intermittent_dropout()` — random frame drops
-- `temperature_ramp()` — thermal effects on readings
-- `below_ground_landing()` — landing site lower than launch site
+`conftest.py` (62 lines) constructs a fake MicroPython runtime on CPython. Before any avionics code is imported, it:
 
-The integration tests cover:
+- Creates mock `machine` module with fake `Pin`, `SPI`, `SoftI2C`, `ADC`, `freq()`, and `WDT`
+- Creates mock `_thread` module with fake `start_new_thread`
+- Creates mock `sdcard` module with fake `SDCard`
+- Patches `time.ticks_ms`, `time.ticks_us`, `time.ticks_diff`, and `time.sleep_ms` onto CPython's `time` module (MicroPython-only functions that don't exist on desktop Python)
+- Carefully preserves stdlib `logging` before the project's `logging/` directory shadows it on `sys.path`
 
-- 7 different motor profiles (D12 through J350)
-- False launch detection and recovery
-- Sensor faults during every flight phase
-- Pressure spikes during apogee detection
-- Multiple sequential flights without reboot
-- Barometric drift compensation
-- Angled flight trajectories
-- Below-ground landing scenarios
-- Binary log encode/decode round-trip verification
+The avionics code doesn't know it's not on a Pico. It imports `machine`, calls `Pin()`, reads "ADC" values — all hitting mocks.
 
-Each test has structured metadata (`test_meta.py` — 1,091 lines) with descriptions, pass criteria, related config keys, category badges, and scenario details. Because the tests have their own metadata schema.
+### The Simulation Harness — A Virtual Flight Computer
+
+`sim_harness.py` (435 lines) is the crown jewel. It builds a complete `PicoSim` class that mirrors `main.py`'s Core 0 loop: sensor read → altitude conversion → Kalman filter → state machine → binary logger. Same code path. Same pipeline. No hardware.
+
+The `PicoSim` takes a **sensor provider** — a Python generator yielding `(pressure_pa, temperature_c)` tuples — and runs the full avionics pipeline against it. Every frame produces a result dict with timestamp, state, filtered altitude, filtered velocity, voltages, and flags. The `SimResult` object tracks state transitions, max altitude, max velocity, flight duration, and provides query helpers like `state_at(time_s)` and `reached_state(LANDED)`.
+
+The simulation even supports **optional binary logging** — it writes actual `.bin` files using the real `FlightLogger` class, which are then decoded by the real `decode_log.py` decoder for round-trip verification.
+
+### 10 Fault Injection Primitives
+
+The harness ships with a fault injection framework. Ten composable generators that wrap any sensor provider and corrupt its output in specific ways:
+
+| Fault Injector | What It Does |
+|---|---|
+| `from_simulate()` | Wraps the physics engine as sensor data (pressure from ISA atmosphere model) |
+| `from_pressure_sequence()` | Raw pressure array → sensor generator |
+| `constant()` | Steady-state: fixed pressure for N frames (pad/ground testing) |
+| `noise_overlay()` | Gaussian noise on pressure and temperature channels (configurable σ) |
+| `sensor_dropout()` | `SENSOR_FAULT` sentinel for N frames at frame index X (I2C failure) |
+| `pressure_spike()` | Replace pressure with arbitrary value for N frames (glitch injection) |
+| `gradual_drift()` | Linear pressure offset increasing over time (barometric weather change) |
+| `stuck_sensor()` | Freeze output at the value from frame X for N frames (sensor lock-up) |
+| `intermittent_dropout()` | Multiple dropout windows: list of `(start_frame, duration)` tuples |
+| `below_ground_landing()` | Gradually increase pressure during descent (landing in a valley below launch) |
+| `angled_flight()` | Scale pressure deviation by a fraction (off-axis flight: 70% effective altitude) |
+| `temperature_ramp()` | Linear temperature change over time (thermal soak or altitude cooling) |
+
+These compose. You can stack `noise_overlay` on top of `sensor_dropout` on top of `from_simulate`. The integration tests do exactly this.
+
+### 18 Test Classes, 70 Integration Tests
+
+The integration suite (`test_integration.py`, 858 lines) is organized into 18 test classes covering scenarios that would be impossible to test on real hardware without actually launching rockets:
+
+**Normal Flight** (12 tests) — Full state sequence verification across 5 motor classes (D12, E12, F32, G40, H100, I218, J350). Checks that all 7 states occur in order. Validates apogee altitude falls within expected range (100–800m for H100). Confirms positive max velocity, reasonable flight duration (5–300s), zero error frames in clean flights, finite values in every frame, and correct timestamps on every state transition.
+
+**Ideal Flight** (4 tests) — Textbook-perfect conditions. Verifies deterministic output (two identical runs produce identical apogee within 0.01m). Checks monotonically increasing altitude during BOOST (every frame ≥ previous frame − 0.5m tolerance).
+
+**Noisy Flight** (4 tests) — 100 Pa Gaussian noise on pressure. 200 Pa noise on pad (must NOT false-trigger launch). Light noise (20 Pa) through full descent. Combined pressure + temperature noise (80 Pa + 2°C).
+
+**Angled Flight** (3 tests) — 70% effective altitude still detects all states. 50% effective altitude produces measurably lower apogee. 30% effective altitude (severe off-axis) doesn't crash the pipeline.
+
+**False Launch Recovery** (2 tests) — Brief altitude spike then return to ground: must recover to PAD. Walking up stairs (3m altitude gain over 3 seconds): must stay on PAD. The walking-upstairs test generates 75 frames of gradual 0.48 Pa/frame pressure decrease, waits, then returns to ground level.
+
+**Sensor Dropout** (4 tests) — 10 frames of `SENSOR_FAULT` during coast produce exactly 10 error frames with `flags=0x08`. System recovers after dropout and eventually reaches LANDED. Dropout on pad doesn't trigger state changes.
+
+**Multiple Dropouts** (3 tests) — Three separate dropout windows (8, 12, 5 frames) produce exactly 25 error frames total. Flight completes despite multiple fault windows. 25-frame (1 second) sustained dropout during coast — system survives.
+
+**Pressure Spikes** (4 tests) — Single-frame spike to 50,000 Pa during coast doesn't skip APOGEE. Spike on pad doesn't false-trigger launch. 5-frame spike during BOOST — system survives. Impossibly low pressure (100 Pa) — all values remain `math.isfinite()`.
+
+**High Altitude** (3 tests) — J350 motor (highest impulse): all values finite, all states reached, higher apogee than H100.
+
+**Short Flight** (2 tests) — D12 on a 300g rocket: at least detects BOOST. All frames contain finite values.
+
+**Below-Ground Landing** (3 tests) — 50m valley below launch: negative AGL values confirmed, all values finite, states still detected.
+
+**Wind Gust / Barometric Drift** (2 tests) — 5m-equivalent slow drift: doesn't false-trigger. Rapid drift (5 Pa/frame): pipeline survives.
+
+**Stuck Sensor** (3 tests) — 100 frames of frozen readings during coast: no crash, correct frame count. Frozen readings on pad: stays on PAD.
+
+**Temperature Effects** (3 tests) — Rising temp, falling temp, and logging verification (end temp > start temp when ramping up).
+
+**Voltage Brownout** (3 tests) — Injected low voltages appear in frame data. Gradual voltage drain (battery discharge simulation). Default voltages are nominal (3300, 5000, 9000 mV).
+
+**Extended Pad Wait** (2 tests) — 10 minutes (15,000 frames) idle on pad, then H100 flight: still works. 5,000 frames of pad with zero spurious state transitions.
+
+**SD Card Failure** (5 tests) — Binary write creates valid decodable file. Sensor faults produce error frames in binary output. File truncated at 50% (simulating full SD): decoder handles gracefully. Partial frame at end (mid-write power loss): skipped by decoder. `sd_failed` flag makes `write_frame()` a silent no-op (verified: 10 frames before failure, 0 frames after).
+
+**SD Capacity Calculation** (1 test) — Mathematically verifies that 8GB at 34 bytes/frame at 25 Hz = >2,600 hours of recording.
+
+**Marginal Launch** (2 tests) — Heavy rocket on small motor. High drag coefficient (Cd=1.2) produces lower apogee than nominal (Cd=0.45).
+
+**Round-Trip Binary** (3 tests) — Write `.bin` → decode with `decode_log.py` → compare: frame count matches, field values match within f32 precision (0.5 tolerance), state sequences are identical.
+
+### The Test Metadata Schema
+
+`test_meta.py` (1,091 lines) defines structured metadata for every single test. Each test gets:
+
+```python
+{
+    "desc": "What the test does (one sentence)",
+    "criteria": ["List of pass/fail assertions"],
+    "config_keys": ["KALMAN_Q_ALT", "LAUNCH_ALT_THRESHOLD", ...],
+    "category": "Integration",
+    "scenario": "H100 / 2.5kg / nominal",
+    "tags": ["smoke", "regression", "fault-injection"],
+}
+```
+
+This metadata feeds into the diagnostic TUI so that when a test fails, the operator sees exactly which config parameters are relevant, what the pass criteria were, and what scenario was being tested. The tests have their own rich documentation system. The metadata file is longer than the Kalman filter, the state machine, and the barometer driver combined.
 
 ---
 
@@ -443,46 +518,172 @@ Because the data logger needed its own ground station. The `tools/ground-station
 
 ---
 
-## The Diagnostic System — 8 Hardware Tests + a Full TUI
+## Onboard Diagnostics — 1,115 Lines of Self-Testing Firmware
 
-`hw_check.py` (383 lines) runs 6 hardware verification tests independently of the flight firmware:
+The Pico doesn't just run flight code. It also runs a full diagnostic suite on itself.
 
-1. **LED test** — 5 blinks, visual confirmation
-2. **I2C bus scan** — finds all devices, auto-identifies BMP180, MPU6050, HMC5883L, SSD1306 by address
-3. **BMP180 barometer** — chip ID check, calibration EEPROM validation, temp range sanity, 10-sample pressure noise characterization
-4. **ADC voltage rails** — all three rails with expected-range validation
-5. **SD card** — mount, free space check, write/read/verify cycle, cleanup
-6. **Loop timing** — 100 read cycles benchmarked, best/avg/worst reported, headroom calculation against target Hz
+### First-Boot Hardware Verification
 
-Then there's `pico_diag.py` (1,115 lines) — a full on-device diagnostic framework with additional tests for RAM usage, dual-core operation, float performance, error recovery, and endurance testing.
+`hw_check.py` (383 lines) is a standalone diagnostic — zero dependencies on the avionics codebase. You flash this onto a bare Pico and it systematically tests every component:
 
-And `tools/pico_diag_tui.py` (1,616 lines) — a terminal UI for running diagnostics interactively over serial.
+1. **LED test** — blinks 5 times, visual confirmation
+2. **I2C bus scan** — scans the full address space, auto-identifies known devices by address (BMP180 at 0x77, MPU6050 at 0x68, HMC5883L at 0x1E, SSD1306 OLED at 0x3C)
+3. **BMP180 barometer** — chip ID verification (0x55), soft reset, 22-byte calibration EEPROM read with sanity check, temperature range validation (-40°C to 85°C), and a **10-sample pressure noise characterization** that warns if peak-to-peak noise exceeds 200 LSB
+4. **ADC voltage rails** — all three rails read through their dividers, checked against expected ranges (3.3V: 3.0–3.6V, 5V: 3.0–7.0V, 9V: 5.0–12.0V)
+5. **SD card** — SPI init at 400 kHz (SD spec), mount FAT, report total/free space, **write → read → compare → delete** cycle, list existing flight logs
+6. **Loop timing** — 100 full BMP180 temp+pressure read cycles benchmarked at microsecond precision. Reports best/avg/worst. Calculates headroom against configured Hz target. Warns if worst-case exceeds frame budget
+
+Prints a scored summary: `6/6 tests passed → ★ ALL CLEAR ★`.
+
+### The Deep Diagnostics Framework
+
+`pico_diag.py` (1,115 lines) goes further. This is a full diagnostic framework that runs *on the Pico itself*, with its own statistics engine. It implements:
+
+**Welford's Online Algorithm** — A streaming statistics class (`StreamStats`) that computes mean, standard deviation, min, and max in a single pass with no array storage. Uses Welford's numerically stable online variance algorithm. Even implements square root via Newton's method because MicroPython doesn't guarantee `math.sqrt()` availability:
+
+```python
+def std(self):
+    v = self._m2 / self.n
+    s = v
+    for _ in range(10):  # Newton's method
+        s = 0.5 * (s + v / s)
+    return s
+```
+
+A statistics library. Hand-rolled. On a microcontroller. For diagnostics.
+
+**Built-in Histogram** — Fixed-bin histogram class that renders ASCII bar charts over serial. Used for timing distribution analysis.
+
+**Test 1: Sensor Bench** — 1,000 BMP180 reads with microsecond-precision timing on every read. Reports timing distribution as a histogram. Calculates pressure noise in Pascals, converts to altitude noise (~0.083 m/Pa at sea level). Detects I2C clock stretching by flagging any read >2x the average.
+
+**Test 2: SD Card Bench** — Two phases:
+- *Phase 1*: 1,000 frame writes with per-write microsecond timing, per-flush timing, per-sync timing. Histogram of write latency. Warns if any write exceeds the 40ms frame budget.
+- *Phase 2*: **5-minute sustained write at 25 Hz**. Real-time reporting every 30 seconds: average latency, max latency, bytes written, error count. Simulates an actual flight-length logging session. Reports total errors at the end.
+
+**Test 3: Loop Budget** — The pipeline profiling test. Runs 1,000 frames through the *real* avionics pipeline (barometer → altitude → Kalman → FSM → power → struct pack) and individually times every stage:
+
+```
+Stage              Avg(us)   Max(us)  % Budget
+──────────────────────────────────────────────
+Baro read            31042     33891    77.6%
+Alt calc                89       142     0.2%
+Kalman                 156       203     0.4%
+FSM                     67       109     0.2%
+Power read             412       587     1.0%
+Struct pack             34        47     0.1%
+──────────────────────────────────────────────
+TOTAL                31800     34979    79.5%
+Headroom              8200      5021    20.5%
+```
+
+Per-stage microsecond profiling of the entire data pipeline. On a $4 chip. With percentage-of-budget calculations.
+
+**Test 4: RAM Profile** — Measures memory consumption of every avionics object: `AltitudeKalman`, `FlightStateMachine`, `FlightLogger`, `BMP180`. Reports bytes consumed by each. Then runs 1,000 frames through the hot loop with `gc.collect()` every 100 frames, tracking memory at each checkpoint. Detects memory leaks by comparing start and end values. Warns if leak exceeds 100 bytes per 1,000 frames.
+
+**Test 5: Float Precision** — 10,000 iterations of the Kalman filter fed constant altitude (500.0m). Reports drift at every 1,000 iterations. Then 10,000 iterations with ramping input (0→10,000m). Checks final altitude tracking error, velocity estimate error against expected (25.0 m/s for 1m/frame at 25Hz), and verifies covariance matrix diagonal remains positive. Pure math stress test — no hardware needed.
+
+**Test 6: Dual-Core Stress** — Two-phase test:
+- *Phase 1*: 30 seconds of Core 0 running the full pipeline solo. Records timing statistics.
+- *Phase 2*: 30 seconds of Core 0 running the pipeline while Core 1 toggles the LED at 25ms intervals via `_thread`. Compares timing between phases to quantify GIL contention impact.
+
+Then there's `tools/pico_diag_tui.py` (1,616 lines) — a laptop-side terminal UI that drives all these diagnostics over USB serial, with rich formatting, progress bars, and interactive test selection.
 
 ---
 
-## Additional Tools
+## Runtime Health Monitoring — Every Frame is Audited
 
-- **`tools/preflight.py`** (1,078 lines) — comprehensive pre-flight checklist tool
-- **`tools/postflight.py`** (1,060 lines) — post-flight analysis and reporting
-- **`tools/simulator_tui.py`** (1,119 lines) — interactive terminal UI for the flight simulator
-- **`tools/launch.py`** (471 lines) — launch operations management
-- **`tools/seed_flight.py`** (382 lines) — generate synthetic flight data for testing
-- **`tools/decode_log.py`** (237 lines) — binary log decoder with optional matplotlib plots
-- **`tools/tui.py`** (806 lines) — general terminal UI utilities
+During flight, the system doesn't just log data — it monitors itself:
 
----
+### Voltage Rail Monitoring at 50 Hz
 
-## The Voltage Monitoring — Watching Three Power Rails at 50 Hz
-
-The `PowerMonitor` class reads three voltage rails through ADC pins, 50 times per second, logged in every single binary frame:
+The `PowerMonitor` class reads three voltage rails through ADC pins, on every single frame, 50 times per second:
 
 - **3.3V rail** — direct ADC read (within ADC range)
 - **5V rail** — through a 500Ω/680Ω voltage divider (ratio 1.735)
 - **9V rail** — through a 2k/1k voltage divider (ratio 3.0)
 
-Each read does a throwaway `read_u16()` first to handle the ADC mux switching delay. Stuck-low readings (< 100 raw counts) are flagged as disconnected pins. Boot-time health check validates all rails against expected ranges.
+Each read does a throwaway `read_u16()` first to handle the ADC mux switching delay (the RP2040 ADC multiplexer needs time to settle after switching channels). Stuck-low readings (raw < 100 counts) are flagged as disconnected pins and return 0mV.
 
-The voltage data isn't used for anything in-flight. It's logged. In case someone wants to correlate a power anomaly with a sensor glitch post-flight.
+At boot, `check_health()` validates all rails against spec (3.3V: 3.0–3.6V, 5V: 4.5–5.5V, 9V: 8.0–10.0V). In flight, the raw millivolt values are packed into every binary frame — 6 bytes per frame dedicated to voltage telemetry. That's 18% of the data payload spent on power monitoring.
+
+This data isn't used for any in-flight decisions. It exists so that post-flight analysis can correlate power anomalies with sensor glitches: a voltage dip at the same timestamp as a noisy pressure reading would explain the noise.
+
+### Frame-Level Error Flagging
+
+Every frame carries a flags byte. Bit 3 is the error flag. If the sensor read throws an exception, or the SD card write fails, the flag is set in that frame's binary record. The error frame still gets written — with zeroed sensor data — so the decoder knows exactly which frames were affected and when. No silent data gaps.
+
+### SD Card Health Tracking
+
+The logger tracks `_sd_failed` as a persistent flag. On the first write failure, it retries once. If the retry fails, the flag goes true and all subsequent `write_frame()` calls become no-ops — the pipeline keeps running (sensor reads, Kalman, FSM all continue) but stops trying to write to a dead card. The LED switches to solid-on to visually indicate data loss. The error propagates into the flags byte of every frame from that point forward.
+
+### 1 Hz Console Telemetry
+
+Every second, the system prints a status line over USB serial:
+
+```
+[COAST  ] alt=  312.4m  vel= +2.1m/s  P=97532Pa  T=21.3°C  3V3=3312mV  50Hz 3847us  #2450
+```
+
+Seven fields of runtime telemetry: flight state, filtered altitude, filtered velocity, raw pressure, temperature, 3.3V rail voltage, achieved sample rate (actual Hz, not target), average frame processing time in microseconds, and total frames logged. This is real-time performance instrumentation. Every second. In production.
+
+### Hardware Watchdog
+
+A 5-second hardware WDT runs from boot. If the firmware hangs — I2C bus lock-up, SD card blocking, infinite loop in the filter — the watchdog hard-resets the Pico. The WDT is fed at the top of every frame in the main loop, during every iteration of every preflight retry loop, and before/after every `os.sync()` call (which can block for hundreds of milliseconds on large FAT updates).
+
+### State Transition Auditing
+
+Every state change triggers an immediate `flush()` + `os.sync()`, logging the transition moment to persistent storage within milliseconds. If the rocket crashes and power cuts during descent, the SD card has at minimum: the exact timestamp of every state transition up to the crash.
+
+---
+
+## Binary Format Efficiency — 2,900+ Hours on an 8GB SD Card
+
+The custom binary format was designed for maximum recording density on minimal hardware:
+
+| Metric | Value |
+|---|---|
+| Frame size (data) | 32 bytes |
+| Frame size (wire: sync + data) | 34 bytes |
+| Overhead (sync headers) | 5.9% |
+| Frames per second (50 Hz) | 50 |
+| Bytes per second | 1,700 |
+| Bytes per minute | 102,000 |
+| Bytes per hour | 6.12 MB |
+| **8 GB SD card capacity** | **~1,300 hours at 50 Hz** |
+| **8 GB SD card capacity** | **~2,600 hours at 25 Hz** |
+| Frames per GB | ~31.6 million |
+| Flight time per GB (50 Hz) | ~175 hours |
+
+For context: a typical rocket flight lasts 30–90 seconds. At 50 Hz, a 90-second flight produces 4,500 frames = 153 KB. An 8 GB SD card could store **over 50,000 flights**.
+
+The system could log continuously for **54 days at 50 Hz** before filling the card. You will run out of battery, patience, and reasons to keep logging long before you run out of storage.
+
+Compare this to CSV logging. The same frame data as CSV — with headers, decimal formatting, commas, and newlines — would be roughly 200+ bytes per frame. The binary format is **6x more space-efficient** than CSV while also being faster to write (no string formatting in the hot loop, no float-to-ASCII conversion, no newline handling) and more reliable to parse (fixed-width frames with sync markers vs. variable-length text lines that can be corrupted by partial writes).
+
+The test suite includes a mathematical verification of this:
+
+```python
+def test_sd_capacity_calculation(self):
+    frame_wire_size = 2 + FRAME_SIZE  # 34 bytes
+    bytes_per_second = frame_wire_size * 25
+    sd_capacity = 8 * 1024 * 1024 * 1024
+    hours = sd_capacity / bytes_per_second / 3600
+    assert hours > 2600
+```
+
+Even the storage capacity has a test case.
+
+---
+
+## Additional Tools
+
+- **`tools/preflight.py`** (1,078 lines) — interactive TUI with USB serial connection to Pico, 5 hardware checks, live 2 Hz sensor monitoring with sparkline altitude display, voltage bar graphs, GO/NO-GO assessment, manual override, and ground pressure recalibration
+- **`tools/postflight.py`** (1,060 lines) — post-flight TUI with binary log download over serial (base64 chunked transfer), ASCII altitude charts with actual-vs-simulated overlay, state timeline with colored segments, velocity sparklines, power rail voltage ranges, and Cd adjustment suggestions
+- **`tools/simulator_tui.py`** (1,119 lines) — interactive terminal UI for the flight simulator
+- **`tools/launch.py`** (471 lines) — launch operations management
+- **`tools/seed_flight.py`** (382 lines) — synthetic flight data generator for testing
+- **`tools/decode_log.py`** (237 lines) — binary log decoder with 4-subplot matplotlib charts (altitude raw+filtered, velocity, pressure, power rails) and state transition markers
+- **`tools/tui.py`** (806 lines) — general terminal UI utilities
 
 ---
 
@@ -490,18 +691,22 @@ The voltage data isn't used for anything in-flight. It's logged. In case someone
 
 This project took the spec "read pressure, write to SD card, 10 Hz minimum" and delivered:
 
-- A Bayesian state estimator deriving velocity from pressure alone
-- A 7-state deterministic finite automaton with hysteresis, debouncing, timeout fallbacks, and false-trigger recovery
-- Pipelined sensor reads overlapping ADC conversion with frame processing
-- Microsecond-precision spin-wait timing at 5x the required sample rate
-- Zero-allocation binary logging with sync headers for crash recovery
-- A three-tier flush strategy with state-change-triggered metadata sync
-- A hardware watchdog with 5-second timeout
-- A 7-step preflight sequence with triple-retry on every hardware init
-- A 102-test suite simulating sensor faults, pressure spikes, and edge-case flight profiles
-- A full 1D physics simulator with atmosphere modeling
-- A React dashboard with 3D rocket visualization
-- A TypeScript ground station TUI with live serial telemetry
+- A Bayesian state estimator deriving velocity from pressure alone — with hand-unrolled 2x2 matrix math and covariance clamping
+- A 7-state deterministic finite automaton with dual-gate launch detection, false-trigger recovery, consecutive-frame debouncing, timeout fallbacks, and fractional-altitude parachute transitions
+- Pipelined sensor reads overlapping ADC conversion with frame processing to hit 5x the required sample rate
+- Microsecond-precision spin-wait timing with overflow-safe tick arithmetic
+- A custom binary file format with magic numbers, version headers, sync markers, and three parallel decoder implementations in two languages
+- Zero-allocation frame logging with pre-allocated buffers to avoid garbage collector pauses
+- A three-tier flush strategy with state-change-triggered metadata sync and crash-recovery resync
+- A hardware watchdog with 5-second timeout, fed at 15+ points throughout the code
+- A 7-step preflight sequence with triple-retry on every hardware init and manual override support
+- Runtime self-monitoring: 1 Hz console telemetry, per-frame error flagging, SD card health tracking, and 50 Hz voltage rail logging
+- A 102-test suite with a simulated Pico, 10 fault injection primitives, 18 test scenario classes, and 1,091 lines of test metadata
+- An on-device diagnostic framework with Welford's algorithm, ASCII histograms, per-stage pipeline profiling, memory leak detection, Kalman float drift analysis, and dual-core interference testing
+- A full 1D physics simulator with ISA atmosphere, aerodynamic drag, and 7 built-in motor models
+- An 804-line OpenRocket importer handling 50+ unit conversions and three file formats
+- A React + TypeScript ground station with 3D rocket visualization, live serial telemetry, and post-flight analysis
+- Binary format efficient enough to log **2,600+ hours on an 8 GB SD card** — approximately 50,000 rocket flights
 - 26,000 lines of code across 109 files
 
 It reads pressure. It writes to an SD card. It does it *really, really well*.
