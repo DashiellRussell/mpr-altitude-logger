@@ -4,6 +4,7 @@ Power rail monitoring — reads 3.3V, 5V, and 9V regulator voltages via ADC pins
 """
 
 from machine import ADC, Pin
+import time
 import config
 
 
@@ -17,9 +18,10 @@ class PowerMonitor:
 
     def _read_mv(self, adc, divider_ratio):
         """Read ADC and convert to actual voltage in mV."""
+        adc.read_u16()  # throwaway — selects channel after mux switch
         raw = adc.read_u16()
-        # Flag anomalous readings (stuck low/high)
-        if raw <= 100 or raw >= 65400:
+        # Flag stuck-low readings (floating/disconnected pin)
+        if raw <= 100:
             return 0
         v_adc = (raw / config.ADC_RESOLUTION) * config.VREF
         return int(v_adc * divider_ratio * 1000)

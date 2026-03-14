@@ -4,7 +4,7 @@ Edit this file for your specific hardware setup.
 """
 
 # ── Software Version ────────────────────────────────────────
-VERSION = "1.9.0"
+VERSION = "1.12.0"
 
 # ── Pin Assignments ──────────────────────────────────────────
 

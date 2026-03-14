@@ -77,6 +77,47 @@ export class PicoLink {
     await this.drain();
 
     this.mode_ = 'repl';
+
+    // Tame the hardware watchdog — main.py starts a 5s WDT that can't be
+    // stopped on RP2040.  Re-init with max timeout and use a Timer IRQ to
+    // feed it continuously so the board doesn't reset during checks.
+    await this.tameWatchdog();
+  }
+
+  /**
+   * Feed the hardware WDT and set up auto-feed timer.
+   * Also deinits main.py's LED Timer which survives Ctrl-C.
+   * Silently ignored if no WDT is active (fresh boot).
+   */
+  private async tameWatchdog(): Promise<void> {
+    try {
+      await this.execRaw(
+        'from machine import WDT, Timer\n' +
+        'try:\n _wdt=WDT(timeout=8300)\n _wdt.feed()\nexcept:\n pass\n' +
+        '_wdt_tmr=Timer()\n' +
+        '_wdt_tmr.init(period=2000,mode=Timer.PERIODIC,' +
+        'callback=lambda t:_wdt.feed())',
+        5000
+      );
+    } catch {
+      // No WDT active — fine
+    }
+    // Stop main.py's LED Timer(-1) which survives Ctrl-C into raw REPL
+    try {
+      await this.execRaw(
+        'from machine import Timer\n' +
+        'try:\n Timer(-1).deinit()\nexcept:\n pass',
+        2000
+      );
+    } catch {
+      // Ignore
+    }
+    // Free RAM from interrupted main.py
+    try {
+      await this.execRaw('import gc\ngc.collect()', 3000);
+    } catch {
+      // Ignore
+    }
   }
 
   /** Exit raw REPL and close serial */
@@ -245,6 +286,9 @@ export class PicoLink {
 
     this.mode_ = 'repl';
     this.lineBuffer = '';
+
+    // Re-tame WDT after re-entering REPL (board may have rebooted)
+    await this.tameWatchdog();
   }
 
   /** Register a line listener for passthrough mode */

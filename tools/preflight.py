@@ -41,6 +41,8 @@ except ImportError:
 
 # -- Constants ---------------------------------------------------------------
 
+TUI_VERSION = "1.9.0"
+EXPECTED_FW_VERSION = "1.9.0"
 BAUD = 115200
 POLL_HZ = 2
 SPARKLINE_LEN = 40
@@ -49,16 +51,37 @@ SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 
 RAIL_SPECS = {
     "3V3": (3.3, 3.0, 3.6, 1.0),   # (nominal, min, max, divider)
-    "5V":  (5.0, 4.5, 5.5, 2.0),
+    "5V":  (5.0, 4.5, 5.5, 1.735),
     "9V":  (9.0, 8.0, 10.0, 3.0),
 }
 
 # -- Pico code snippets (sent via raw REPL) ----------------------------------
 
+# WDT taming — main.py starts a 5s WDT that can't be stopped on RP2040.
+# Re-init with max timeout and use a Timer IRQ to feed it continuously.
+WDT_TAME_CODE = (
+    "from machine import WDT, Timer\n"
+    "try:\n _wdt=WDT(timeout=8300)\n _wdt.feed()\nexcept:\n pass\n"
+    "_wdt_tmr=Timer()\n"
+    "_wdt_tmr.init(period=2000,mode=Timer.PERIODIC,"
+    "callback=lambda t:_wdt.feed())"
+)
+
+# Stop main.py's LED Timer(-1) which survives Ctrl-C into raw REPL
+TIMER_DEINIT_CODE = (
+    "from machine import Timer\n"
+    "try:\n Timer(-1).deinit()\nexcept:\n pass"
+)
+
 SYSINFO_CODE = """\
 import sys, gc, machine
 gc.collect()
-print('{},{},{}'.format(sys.version, machine.freq(), gc.mem_free()))
+try:
+    import config
+    av = config.VERSION
+except:
+    av = '?'
+print('{},{},{},{}'.format(sys.version, machine.freq(), gc.mem_free(), av))
 """
 
 I2C_SCAN_CODE = """\
@@ -79,8 +102,14 @@ SD_CHECK_CODE = """\
 import os
 from machine import SPI, Pin
 import sdcard
-spi = SPI(0, baudrate=1000000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
-cs = Pin(17, Pin.OUT, value=1)
+import time
+cs = Pin(17, Pin.OUT)
+cs.value(1)
+time.sleep_ms(100)
+spi = SPI(0, baudrate=400000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
+cs.value(1)
+spi.write(b'\\xff' * 10)
+time.sleep_ms(10)
 sd = sdcard.SDCard(spi, cs)
 vfs = os.VfsFat(sd)
 os.mount(vfs, '/sd')
@@ -103,6 +132,23 @@ a3 = ADC(Pin(28)).read_u16()
 a5 = ADC(Pin(26)).read_u16()
 a9 = ADC(Pin(27)).read_u16()
 print('{},{},{}'.format(a3, a5, a9))
+"""
+
+LED_CHECK_CODE = """\
+from machine import Pin
+import time
+try:
+    led = Pin(25, Pin.OUT)
+    led.on()
+    time.sleep_ms(300)
+    led.off()
+    time.sleep_ms(200)
+    led.on()
+    time.sleep_ms(300)
+    led.off()
+    print('OK')
+except Exception as e:
+    print('ERR:{}'.format(e))
 """
 
 INIT_CODE = r"""
@@ -202,6 +248,16 @@ for _ in range(10):
 print(sum(_ps) // len(_ps))
 """
 
+WRITE_OVERRIDE_FLAG_CODE = """\
+import os
+try:
+    with open('_manual_override', 'w') as f:
+        f.write('1')
+    print('OK')
+except Exception as e:
+    print('ERR:{}'.format(e))
+"""
+
 
 # -- Raw REPL link -----------------------------------------------------------
 
@@ -216,15 +272,18 @@ class PicoLink:
         candidates = glob.glob("/dev/cu.usbmodem*")
         if candidates:
             return candidates[0]
+        candidates = glob.glob("/dev/ttyACM*")
+        if candidates:
+            return candidates[0]
         for p in serial.tools.list_ports.comports():
-            if "usbmodem" in p.device:
+            if "usbmodem" in p.device or "ACM" in p.device:
                 return p.device
         return None
 
     def connect(self):
         port = self.port or self.find_port()
         if not port:
-            raise ConnectionError("No Pico found on /dev/cu.usbmodem*")
+            raise ConnectionError("No Pico found on USB")
         self.ser = serial.Serial(port, BAUD, timeout=1)
         self.port = port
         time.sleep(0.1)
@@ -236,6 +295,26 @@ class PicoLink:
         self.ser.write(b'\x01')
         time.sleep(0.5)
         self._drain()
+
+        # Tame the hardware watchdog — main.py starts a 5s WDT that can't be
+        # stopped on RP2040.  Re-init with max timeout and use a Timer IRQ to
+        # feed it continuously so the board doesn't reset during checks.
+        try:
+            self.exec_raw(WDT_TAME_CODE, timeout=5.0)
+        except Exception:
+            pass  # no WDT active — fine
+
+        # Stop main.py's LED Timer(-1) which survives Ctrl-C into raw REPL
+        try:
+            self.exec_raw(TIMER_DEINIT_CODE, timeout=2.0)
+        except Exception:
+            pass
+
+        # Free RAM from interrupted main.py
+        try:
+            self.exec_raw("import gc\ngc.collect()", timeout=3.0)
+        except Exception:
+            pass
 
     def close(self):
         if self.ser and self.ser.is_open:
@@ -355,13 +434,15 @@ class PreflightTUI:
         self.fw_version = ""
         self.fw_freq = ""
         self.mem_free = 0
+        self.av_version = ""
 
-        # Hardware checks
+        # Hardware checks (5 checks — matches TypeScript TUI)
         self.checks = [
             make_check("I2C Bus"),
             make_check("Barometer"),
             make_check("SD Card"),
             make_check("Voltages"),
+            make_check("LED"),
         ]
         self.sd_total = 0
         self.sd_free = 0
@@ -386,11 +467,12 @@ class PreflightTUI:
         self.phase = "connect"  # connect, checks, live
         self.busy = ""
         self.issues = []
+        self.manual_go = False
 
     # -- Connection ----------------------------------------------------------
 
     def do_connect(self):
-        """Phase 1: connect to Pico, read system info."""
+        """Phase 1: connect to Pico, tame WDT, read system info."""
         self.busy = "Searching for Pico..."
         try:
             self.link.connect()
@@ -406,11 +488,13 @@ class PreflightTUI:
                 self.issues.append(f"System info error: {stderr}")
                 self.busy = ""
                 return False
-            parts = stdout.strip().split(',', 2)
+            # Parse: version,freq,mem_free,avionics_version
+            parts = stdout.strip().split(',', 3)
             self.fw_version = parts[0].strip() if len(parts) > 0 else "?"
             freq = int(parts[1]) if len(parts) > 1 else 0
             self.fw_freq = f"{freq // 1_000_000} MHz"
             self.mem_free = int(parts[2]) if len(parts) > 2 else 0
+            self.av_version = parts[3].strip() if len(parts) > 3 else "?"
         except Exception as e:
             self.issues.append(f"System info: {e}")
             self.busy = ""
@@ -440,6 +524,7 @@ class PreflightTUI:
         self._check_barometer()
         self._check_sd()
         self._check_adc()
+        self._check_led()
 
         self.phase = "live"
 
@@ -457,7 +542,7 @@ class PreflightTUI:
             if 0x77 in addrs:
                 chk["status"] = "pass"
                 hex_list = ', '.join(f'0x{a:02X}' for a in addrs)
-                chk["detail"] = f"Found BMP180 at 0x77  [{hex_list}]"
+                chk["detail"] = f"Devices: {hex_list}"
             else:
                 chk["status"] = "fail"
                 chk["detail"] = f"BMP180 (0x77) not found. Got: {addrs}"
@@ -480,7 +565,7 @@ class PreflightTUI:
             chip_id = int(stdout.strip())
             if chip_id == 0x55:
                 chk["status"] = "pass"
-                chk["detail"] = f"Chip ID 0x{chip_id:02X}"
+                chk["detail"] = f"BMP180 chip ID 0x{chip_id:02X}"
             else:
                 chk["status"] = "fail"
                 chk["detail"] = f"Unexpected chip ID 0x{chip_id:02X} (expected 0x55)"
@@ -517,7 +602,7 @@ class PreflightTUI:
             self.next_log = f"/sd/{candidate}"
             if write_ok and free > 10:
                 chk["status"] = "pass"
-                chk["detail"] = f"{total} MB total, {free} MB free → {self.next_log}"
+                chk["detail"] = f"{total} MB total, {free} MB free \u2192 {self.next_log}"
             elif not write_ok:
                 chk["status"] = "fail"
                 chk["detail"] = "Write/read verification failed"
@@ -543,15 +628,15 @@ class PreflightTUI:
                 return
             parts = stdout.strip().split(',')
             a3_raw, a5_raw, a9_raw = int(parts[0]), int(parts[1]), int(parts[2])
-            v3 = raw_to_voltage(a3_raw, 1.0)
-            v5 = raw_to_voltage(a5_raw, 2.0)
-            v9 = raw_to_voltage(a9_raw, 3.0)
+            v3 = raw_to_voltage(a3_raw, RAIL_SPECS["3V3"][3])
+            v5 = raw_to_voltage(a5_raw, RAIL_SPECS["5V"][3])
+            v9 = raw_to_voltage(a9_raw, RAIL_SPECS["9V"][3])
             self.v3, self.v5, self.v9 = v3, v5, v9
 
             ok = True
             problems = []
             for label, val, spec_key in [("3V3", v3, "3V3"), ("5V", v5, "5V"), ("9V", v9, "9V")]:
-                nom, lo, hi, _ = RAIL_SPECS[spec_key]
+                _, lo, hi, _ = RAIL_SPECS[spec_key]
                 if val < lo or val > hi:
                     ok = False
                     problems.append(f"{label}={val:.2f}V")
@@ -567,6 +652,42 @@ class PreflightTUI:
             chk["status"] = "fail"
             chk["detail"] = str(e)
             self.issues.append("ADC check error")
+
+    def _check_led(self):
+        chk = self._get_check("LED")
+        chk["status"] = "running"
+        try:
+            stdout, stderr = self.link.exec_raw(LED_CHECK_CODE, timeout=5.0)
+            if stderr:
+                chk["status"] = "fail"
+                chk["detail"] = stderr
+                self.issues.append("LED test failed")
+                return
+            val = stdout.strip()
+            if val == 'OK':
+                chk["status"] = "pass"
+                chk["detail"] = "Blinked OK \u2014 check board visually"
+            else:
+                chk["status"] = "fail"
+                chk["detail"] = f"Unexpected: {val}"
+                self.issues.append("LED test error")
+        except Exception as e:
+            chk["status"] = "fail"
+            chk["detail"] = str(e)
+            self.issues.append("LED test error")
+
+    # -- Manual GO Override --------------------------------------------------
+
+    def write_override_flag(self):
+        """Write _manual_override flag so main.py skips fatal halts."""
+        try:
+            stdout, stderr = self.link.exec_raw(WRITE_OVERRIDE_FLAG_CODE, timeout=5.0)
+            if stdout.strip() == 'OK':
+                self.manual_go = True
+                return True
+        except Exception:
+            pass
+        return False
 
     # -- Init sensors & calibrate for live monitoring ------------------------
 
@@ -634,9 +755,9 @@ class PreflightTUI:
             parts = stdout.strip().split(',')
             self.pressure = float(parts[0])
             self.temp = float(parts[1])
-            self.v3 = raw_to_voltage(int(parts[2]), 1.0)
-            self.v5 = raw_to_voltage(int(parts[3]), 2.0)
-            self.v9 = raw_to_voltage(int(parts[4]), 3.0)
+            self.v3 = raw_to_voltage(int(parts[2]), RAIL_SPECS["3V3"][3])
+            self.v5 = raw_to_voltage(int(parts[3]), RAIL_SPECS["5V"][3])
+            self.v9 = raw_to_voltage(int(parts[4]), RAIL_SPECS["9V"][3])
         except (ValueError, IndexError):
             return
 
@@ -657,13 +778,13 @@ class PreflightTUI:
 
     def _check_icon(self, status):
         icons = {
-            "pass":    "[green][PASS][/green]",
-            "fail":    "[red][FAIL][/red]",
-            "skip":    "[yellow][SKIP][/yellow]",
-            "running": f"[yellow]{spinner_char()}    [/yellow]",
-            "pending": "[dim][ -- ][/dim]",
+            "pass":    "[green][ PASS ][/green]",
+            "fail":    "[red][ FAIL ][/red]",
+            "skip":    "[yellow][ SKIP ][/yellow]",
+            "running": f"[yellow]{spinner_char()}      [/yellow]",
+            "pending": "[dim][ --  ][/dim]",
         }
-        return icons.get(status, "[dim][ -- ][/dim]")
+        return icons.get(status, "[dim][ --  ][/dim]")
 
     def _all_checks_passed(self):
         for c in self.checks:
@@ -671,9 +792,12 @@ class PreflightTUI:
                 return False
         return True
 
+    def _version_ok(self):
+        return self.av_version == EXPECTED_FW_VERSION or self.av_version in ('', '?')
+
     def _voltages_ok(self):
-        for label, spec_key in [("3V3", "3V3"), ("5V", "5V"), ("9V", "9V")]:
-            nom, lo, hi, _ = RAIL_SPECS[spec_key]
+        for spec_key in ("3V3", "5V", "9V"):
+            _, lo, hi, _ = RAIL_SPECS[spec_key]
             val = {"3V3": self.v3, "5V": self.v5, "9V": self.v9}[spec_key]
             if val > 0 and (val < lo or val > hi):
                 return False
@@ -693,26 +817,42 @@ class PreflightTUI:
             lines.append("  Board     [red]\u25cf[/red] Disconnected")
 
         if self.fw_version:
-            # Truncate long version strings
             ver = self.fw_version
             if len(ver) > 40:
                 ver = ver[:40] + "..."
-            lines.append(f"  Firmware  {ver}  @ {self.fw_freq}")
+            lines.append(f"  Firmware  {ver}")
         else:
             lines.append("  Firmware  [dim]--[/dim]")
 
-        if self.mem_free > 0:
-            lines.append(f"  Memory    {self.mem_free:,} bytes free")
+        # Avionics version + TUI version
+        if self.av_version and self.av_version != '?':
+            av_color = "green" if self._version_ok() else "yellow"
+            mismatch = "" if self._version_ok() else "  [red bold]VERSION MISMATCH[/red bold]"
+            lines.append(
+                f"  Avionics  [{av_color}]v{self.av_version}[/{av_color}]"
+                f"    TUI  [dim]v{TUI_VERSION}[/dim]{mismatch}"
+            )
         else:
-            lines.append("  Memory    [dim]--[/dim]")
+            lines.append(f"  Avionics  [dim]--[/dim]    TUI  [dim]v{TUI_VERSION}[/dim]")
+
+        if self.mem_free > 0:
+            lines.append(f"  CPU       {self.fw_freq}    Mem  {self.mem_free // 1024} KB free")
+        else:
+            lines.append("  CPU       [dim]--[/dim]")
         lines.append("")
 
         # -- HARDWARE CHECKS --
-        lines.append("[bold]HARDWARE CHECKS[/bold]")
+        npass = sum(1 for c in self.checks if c["status"] == "pass")
+        nfail = sum(1 for c in self.checks if c["status"] == "fail")
+        ntotal = len(self.checks)
+        summary = f"  {npass}/{ntotal} passed"
+        if nfail > 0:
+            summary += f"  {nfail} failed"
+        lines.append(f"[bold]HARDWARE CHECKS[/bold]  [dim]{summary}[/dim]")
         for c in self.checks:
             icon = self._check_icon(c["status"])
             detail = f"  {c['detail']}" if c["detail"] else ""
-            lines.append(f"  {c['name']:<12s} {icon}{detail}")
+            lines.append(f"  {icon}  {c['name']:<12s}{detail}")
         lines.append("")
 
         # -- LIVE TELEMETRY (only in live phase) --
@@ -747,24 +887,34 @@ class PreflightTUI:
             lines.append("")
 
             # -- GO / NO-GO --
-            go = (
+            natural_go = (
                 self._all_checks_passed()
                 and self._voltages_ok()
                 and self._baro_sane()
                 and self.sd_free > 10
+                and not self.issues
+                and self._version_ok()
             )
-            if go and not self.issues:
+            go = natural_go or self.manual_go
+            if go:
                 npass = sum(1 for c in self.checks if c["status"] in ("pass", "skip"))
-                lines.append(
-                    "  [on green][bold black]"
-                    "  \u2605  GO FOR LAUNCH  \u2605                              "
-                    "[/bold black][/on green]"
-                )
-                lines.append(
-                    f"  [on green][bold black]"
-                    f"  All {npass} checks passed  \u2022  Systems nominal              "
-                    f"[/bold black][/on green]"
-                )
+                if self.manual_go and not natural_go:
+                    lines.append(
+                        "  [on yellow][bold black]"
+                        "  \u2605  GO (MANUAL OVERRIDE)  \u2605                      "
+                        "[/bold black][/on yellow]"
+                    )
+                else:
+                    lines.append(
+                        "  [on green][bold black]"
+                        "  \u2605  GO FOR LAUNCH  \u2605                              "
+                        "[/bold black][/on green]"
+                    )
+                    lines.append(
+                        f"  [on green][bold black]"
+                        f"  All {npass} checks passed  \u2022  Systems nominal              "
+                        f"[/bold black][/on green]"
+                    )
             else:
                 reasons = list(self.issues)
                 if not self._voltages_ok():
@@ -773,6 +923,8 @@ class PreflightTUI:
                     reasons.append("Barometer reading out of range")
                 if 0 < self.sd_free <= 10:
                     reasons.append("SD card low space")
+                if not self._version_ok():
+                    reasons.append("Firmware/TUI version mismatch")
                 # deduplicate
                 seen = set()
                 unique = []
@@ -780,7 +932,7 @@ class PreflightTUI:
                     if r not in seen:
                         seen.add(r)
                         unique.append(r)
-                reason_str = "; ".join(unique[:3]) if unique else "Check failures"
+                reason_str = "  \u2022  ".join(unique[:3]) if unique else "Check failures"
                 lines.append(
                     "  [on red][bold black]"
                     "  \u2717  NO-GO  \u2717                                        "
@@ -801,9 +953,11 @@ class PreflightTUI:
         # -- Controls --
         if self.phase == "live":
             lines.append(
-                "  [bold][R][/bold] Recalibrate  "
-                "[bold][T][/bold] Re-test  "
-                "[bold][Q][/bold] Quit"
+                "  [bold]\\[R][/bold] Recalibrate  "
+                "[bold]\\[T][/bold] Re-test  "
+                "[bold]\\[S][/bold] SD Card  "
+                "[bold]\\[G][/bold] Manual GO Override  "
+                "[bold]\\[Q][/bold] Quit"
             )
             lines.append(
                 f"  [dim]{POLL_HZ} Hz \u2022 {self.samples} samples"
@@ -819,7 +973,7 @@ class PreflightTUI:
             body,
             title="[bold white] UNSW ROCKETRY \u2014 PRE-FLIGHT CHECK [/bold white]",
             border_style="blue",
-            width=68,
+            width=78,
             padding=(1, 2),
         )
 
@@ -835,6 +989,8 @@ class PreflightTUI:
         elif k == 't' and self.phase == "live":
             self.run_all_checks()
             self.init_live()
+        elif k == 'g' and self.phase == "live":
+            self.write_override_flag()
         return True
 
 
@@ -881,6 +1037,8 @@ def main():
             tui._check_sd()
             live.update(tui.render())
             tui._check_adc()
+            live.update(tui.render())
+            tui._check_led()
             live.update(tui.render())
 
             tui.phase = "live"

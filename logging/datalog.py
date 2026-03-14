@@ -36,10 +36,14 @@ FRAME_SIZE = struct.calcsize(FRAME_FORMAT)  # 32 bytes
 _has_os_sync = hasattr(os, 'sync')
 
 
-def _try_sync():
+def _try_sync(wdt=None):
     """Force FAT metadata to disk if os.sync() is available."""
     if _has_os_sync:
+        if wdt:
+            wdt.feed()
         os.sync()
+        if wdt:
+            wdt.feed()
 
 
 def _dir_exists(path):
@@ -99,9 +103,10 @@ def next_log_filename(base_path=None):
 class FlightLogger:
     """Writes binary telemetry frames to a per-flight folder on SD card."""
 
-    def __init__(self, filename=None, flush_every=25, sync_every=3):
+    def __init__(self, filename=None, flush_every=25, sync_every=3, wdt=None):
         self.flush_every = flush_every
         self.sync_every = sync_every  # os.sync() every N flushes
+        self._wdt = wdt  # watchdog to feed during slow SD syncs
         self._file = None
         self._count = 0
         self._flush_count = 0
@@ -140,7 +145,7 @@ class FlightLogger:
         self._file.write(b'RKTLOG')    # 6 bytes magic
         self._file.write(struct.pack('<HH', 2, FRAME_SIZE))  # version 2, frame size
         self._file.flush()
-        _try_sync()
+        _try_sync(self._wdt)
 
         return fname
 
@@ -151,7 +156,7 @@ class FlightLogger:
         try:
             with open(self._flight_dir + '/preflight.txt', 'w') as f:
                 f.write(content)
-            _try_sync()
+            _try_sync(self._wdt)
         except Exception as e:
             print('[SD] Preflight write failed: {}'.format(e))
 
@@ -164,7 +169,7 @@ class FlightLogger:
                 for line in lines:
                     f.write(line)
                     f.write('\n')
-            _try_sync()
+            _try_sync(self._wdt)
         except Exception as e:
             print('[SD] Boot log write failed: {}'.format(e))
 
@@ -193,7 +198,7 @@ class FlightLogger:
                 self._file.flush()
                 self._flush_count += 1
                 if self._flush_count >= self.sync_every:
-                    _try_sync()
+                    _try_sync(self._wdt)
                     self._flush_count = 0
                 self._count = 0
         except OSError as e:
@@ -211,7 +216,7 @@ class FlightLogger:
             return
         try:
             self._file.flush()
-            _try_sync()  # Always sync on state change — these are critical
+            _try_sync(self._wdt)  # Always sync on state change — these are critical
             self._count = 0
             self._flush_count = 0
         except Exception as e:
@@ -223,7 +228,7 @@ class FlightLogger:
         if self._file:
             try:
                 self._file.flush()
-                _try_sync()
+                _try_sync(self._wdt)
                 self._file.close()
             except Exception:
                 pass

@@ -39,6 +39,10 @@ import os
 from machine import SPI, Pin
 import sdcard
 import time
+try:
+    os.umount('/sd')
+except:
+    pass
 cs = Pin(17, Pin.OUT)
 cs.value(1)
 time.sleep_ms(100)
@@ -301,8 +305,12 @@ import os
 from machine import SPI, Pin
 import time
 try:
+    os.umount('/sd')
+except:
+    pass
+try:
     cs = Pin(17, Pin.OUT)
-cs.value(1)
+    cs.value(1)
     time.sleep_ms(100)
     spi = SPI(0, baudrate=400000, polarity=0, phase=0, sck=Pin(18), mosi=Pin(19), miso=Pin(16))
     cs.value(1)
@@ -384,6 +392,10 @@ import os
 from machine import SPI, Pin
 import sdcard
 import time
+try:
+    os.umount('/sd')
+except:
+    pass
 cs = Pin(17, Pin.OUT)
 cs.value(1)
 time.sleep_ms(100)
@@ -456,6 +468,10 @@ import os
 from machine import SPI, Pin
 import sdcard
 import time
+try:
+    os.umount('/sd')
+except:
+    pass
 cs = Pin(17, Pin.OUT)
 cs.value(1)
 time.sleep_ms(100)
@@ -478,6 +494,10 @@ import os
 from machine import SPI, Pin
 import sdcard
 import time
+try:
+    os.umount('/sd')
+except:
+    pass
 cs = Pin(17, Pin.OUT)
 cs.value(1)
 time.sleep_ms(100)
@@ -502,6 +522,10 @@ import os
 from machine import SPI, Pin
 import sdcard
 import time
+try:
+    os.umount('/sd')
+except:
+    pass
 cs = Pin(17, Pin.OUT)
 cs.value(1)
 time.sleep_ms(100)

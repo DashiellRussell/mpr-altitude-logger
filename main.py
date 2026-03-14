@@ -99,6 +99,7 @@ def core0_main():
             unmount_sd()  # Clean up before retry
             blog(f" retry {attempt + 2}/3...", end="")
             time.sleep(1)
+    wdt.feed()
     if not sd_mounted:
         preflight_errors.append("SD card mount failed")
         blog("     FAIL — mount failed (3 attempts)")
@@ -126,6 +127,7 @@ def core0_main():
             baro = None
             if attempt < 2:
                 blog(f" retry {attempt + 2}/3...", end="")
+                wdt.feed()
                 time.sleep_ms(500)
     if baro is None:
         preflight_errors.append(f"Barometer: {last_baro_err}")
@@ -225,7 +227,8 @@ def core0_main():
     if sd_ok:
         try:
             logger = FlightLogger(flush_every=config.LOG_FLUSH_EVERY,
-                                  sync_every=config.LOG_SYNC_EVERY)
+                                  sync_every=config.LOG_SYNC_EVERY,
+                                  wdt=wdt)
             log_file = logger.open()
             blog(f"[{step}/7] Logger open   {log_file}")
         except Exception as e:
@@ -281,8 +284,10 @@ def core0_main():
     blog("[RDY] Waiting for launch...\n")
 
     # ── Save boot log to SD card ────────────────────
+    wdt.feed()
     if logger is not None:
         logger.write_boot_log(_boot_log)
+    wdt.feed()
 
     # ── Main sensor loop (pipelined baro reads) ────────
     # Pipeline: pressure conversion runs during the spin-wait between frames.
@@ -331,19 +336,14 @@ def core0_main():
             raw_UP = baro.collect()
             pressure, temperature = baro.compensate(raw_UT, raw_UP)
 
-            # Extra fast reads at OSS=0 (~5ms each) for multi-sample averaging
-            for _ in range(config.BARO_AVG_EXTRA):
-                pressure += baro.read_extra(raw_UT)
-            if config.BARO_AVG_EXTRA:
-                pressure /= (1 + config.BARO_AVG_EXTRA)
-
-            # Re-read temperature every ~1s (blocking 5ms — still well within budget)
+            # Re-read temperature every ~1s (blocking 5ms — fits in budget)
             temp_counter += 1
             if temp_counter >= temp_every:
                 temp_counter = 0
                 raw_UT = baro._read_raw_temp()
 
-            # Kick off next pressure conversion — runs during spin-wait
+            # Kick off next pressure conversion — runs during remaining
+            # frame work + spin-wait.  OSS=2 needs 13.5ms, budget is ~18ms.
             baro.start(temp=False)
 
             alt_raw = pressure_to_altitude(pressure, ground_pressure)

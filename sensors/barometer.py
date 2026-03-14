@@ -23,8 +23,9 @@ class BMP180:
     _CMD_PRESS = (0x34, 0x74, 0xB4, 0xF4)
 
     # Oversampling setting (0-3). Higher = more accurate, slower.
-    # 3 (ultra high) gives best altitude resolution, ~25.5ms per pressure read
-    _OSS = 3
+    # 2 (high res) gives good altitude resolution, ~13.5ms per pressure read.
+    # OSS=3 needs 25.5ms which doesn't fit in the 20ms frame budget at 50 Hz.
+    _OSS = 2
 
     def __init__(self, i2c, addr=0x77):
         self.i2c = i2c

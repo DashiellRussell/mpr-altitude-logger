@@ -28,7 +28,8 @@ import {
   LED_DETAIL_CODE,
 } from '../serial/commands.js';
 
-const TUI_VERSION = '1.4.2';
+const TUI_VERSION = '1.9.0';
+const EXPECTED_FW_VERSION = '1.9.0';
 const DASH_WIDTH = 120;
 const LEFT_W = 58;
 const RIGHT_W = 60;
@@ -518,7 +519,7 @@ export function Preflight({ port }: Props) {
   }, [pico.connected, phase, readSysinfo, runChecks]);
 
   // ── Version mismatch detection ─────────────────────────────────
-  const versionMismatch = sysinfo.avionicsVersion !== '' && sysinfo.avionicsVersion !== '?' && sysinfo.avionicsVersion !== TUI_VERSION;
+  const versionMismatch = sysinfo.avionicsVersion !== '' && sysinfo.avionicsVersion !== '?' && sysinfo.avionicsVersion !== EXPECTED_FW_VERSION;
 
   // ── GO status (computed early so key handler can use it) ────────
   const allPassed = checks.every((c) => c.status === 'pass' || c.status === 'skip');
@@ -527,10 +528,22 @@ export function Preflight({ port }: Props) {
 
   // ── Key handling ─────────────────────────────────────────────────
   useInput((input, _key) => {
-    // Disable when sub-screens are active
-    if (showSDCard || showDetail) return;
+    // SD card sub-screen handles its own input
+    if (showSDCard) return;
 
     if (input === 'q' || input === 'Q') exit();
+
+    // Detail view: only [D] back and [R] re-run are active
+    if (showDetail) {
+      if (input === 'd' || input === 'D') {
+        setShowDetail(false);
+      }
+      if ((input === 'r' || input === 'R') && pico.connected) {
+        setDetailResults({});
+        runDetailedChecks();
+      }
+      return;
+    }
 
     // Boot phase: retry, scroll, or go back to preflight
     if (phase === 'booting') {
@@ -587,11 +600,6 @@ export function Preflight({ port }: Props) {
       setBootConfirm(false);
     }
 
-    if ((input === 'r' || input === 'R') && showDetail && pico.connected) {
-      setDetailResults({});
-      runDetailedChecks();
-      return;
-    }
     if ((input === 'r' || input === 'R') && phase === 'live') telemetry.recalibrate();
     if ((input === 't' || input === 'T') && phase === 'live') {
       setManualGo(false);
@@ -930,7 +938,7 @@ export function Preflight({ port }: Props) {
             )}
             {sysinfo.avionicsVersion ? (
               <Text> Avionics  <Text bold>v{sysinfo.avionicsVersion}</Text>{'    '}TUI  <Text bold>v{TUI_VERSION}</Text>
-                {sysinfo.avionicsVersion !== TUI_VERSION && sysinfo.avionicsVersion !== '?' && (
+                {sysinfo.avionicsVersion !== EXPECTED_FW_VERSION && sysinfo.avionicsVersion !== '?' && (
                   <Text color="red" bold>  VERSION MISMATCH</Text>
                 )}
               </Text>

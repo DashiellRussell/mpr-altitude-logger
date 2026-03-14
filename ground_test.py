@@ -6,7 +6,7 @@ Upload to Pico and run via: import ground_test
 """
 
 import time
-from machine import I2C, Pin, freq
+from machine import SoftI2C, Pin, freq
 import config
 
 
@@ -39,8 +39,8 @@ def run():
     print("\n--- Barometer ---")
     try:
         from sensors.barometer import BMP180, pressure_to_altitude
-        i2c = I2C(config.I2C_ID, sda=Pin(config.I2C_SDA),
-                   scl=Pin(config.I2C_SCL), freq=config.I2C_FREQ)
+        i2c = SoftI2C(sda=Pin(config.I2C_SDA),
+                      scl=Pin(config.I2C_SCL), freq=config.I2C_FREQ)
 
         devices = i2c.scan()
         print(f"  I2C devices: {['0x{:02x}'.format(d) for d in devices]}")
