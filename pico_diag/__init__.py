@@ -11,7 +11,7 @@ From laptop TUI:  pnpm pico
 import gc
 import config
 
-DIAG_VERSION = "1.1.0"
+DIAG_VERSION = "1.3.0"
 
 # ── ANSI helpers ──────────────────────────────────────────
 CLEAR = '\x1b[2J\x1b[H'

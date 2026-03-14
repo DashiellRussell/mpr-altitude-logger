@@ -1,9 +1,9 @@
 """
 main.py — MPR Altitude Logger entry point.
 
-DUAL-CORE ARCHITECTURE:
+ARCHITECTURE:
     Core 0: Preflight checks → Sensor reads → Kalman filter → State machine → SD log
-    Core 1: LED status patterns
+    LED:    Timer callback (soft IRQ) — no _thread, no cross-core GIL contention
 
 Single boot flow: preflight checks run automatically, then flight mode starts.
 LED is the only visual feedback — blinking = running, solid ON = error.
@@ -23,8 +23,6 @@ import os
 import time
 import struct
 from machine import SoftI2C, Pin, freq, WDT
-import _thread
-
 import config
 from sensors.barometer import BMP180, pressure_to_altitude
 from sensors.power import PowerMonitor
@@ -32,14 +30,12 @@ from flight.kalman import AltitudeKalman
 from flight.state_machine import FlightStateMachine, PAD, LANDED, STATE_NAMES
 from logging.datalog import FlightLogger, next_log_filename
 from logging.sdcard_mount import mount as mount_sd, free_space_mb
-from utils.hardware import StatusLED, LED_PATTERNS
+from utils.hardware import TimerLED, LED_PATTERNS
 
 
-# ── Shared state between cores (keep minimal) ───────────────
+# ── Shared state ─────────────────────────────────────────────
 _current_state = PAD
 _landed = False
-_error_mode = False  # solid LED = error
-_preflight_warning = False  # proceeding despite errors
 
 # ── Boot log capture ────────────────────────────────────────
 _boot_log = []
@@ -50,50 +46,11 @@ def blog(msg, end='\n'):
     print(msg, end=end)
 
 
-def core1_task():
-    """
-    Core 1: LED status patterns.
-
-    Runs in a slower loop (~20 Hz). Reads shared state set by Core 0.
-    """
-    global _current_state, _landed, _error_mode, _preflight_warning
-
-    led = StatusLED()
-    led.set_pattern([250, 250])  # fast blink = preflight running
-
-    last_state = -1
-
-    while True:
-        now = time.ticks_ms()
-
-        # Error mode: solid ON
-        if _error_mode:
-            led.on()
-            time.sleep_ms(50)
-            continue
-
-        # Update LED pattern on state change
-        if _current_state != last_state:
-            last_state = _current_state
-            # Distinct pattern on PAD if proceeding despite preflight errors
-            if _preflight_warning and _current_state == PAD:
-                led.set_pattern([200, 200, 200, 1000])
-            else:
-                pattern = LED_PATTERNS.get(_current_state)
-                if pattern is None:
-                    led.on()
-                else:
-                    led.set_pattern(pattern)
-
-        led.tick(now)
-        time.sleep_ms(50)  # ~20 Hz
-
-
 def core0_main():
     """
     Core 0: preflight → sensor loop → filter → state machine → logger.
     """
-    global _current_state, _landed, _error_mode, _preflight_warning
+    global _current_state, _landed
 
     blog("\n╔══════════════════════════════════════════╗")
     blog("║   UNSW ROCKETRY — MPR ALTITUDE LOGGER    ║")
@@ -117,9 +74,10 @@ def core0_main():
     freq(200_000_000)
     blog(f"[1/7] Overclock        {freq() // 1_000_000} MHz")
 
-    # ── Start Core 1 early so LED works during preflight ──
-    _thread.start_new_thread(core1_task, ())
-    blog("[2/7] LED started      slow blink = preflight running")
+    # ── LED via hardware Timer (no _thread — avoids GIL contention) ──
+    led = TimerLED()  # virtual timer, 25ms tick
+    led.set_pattern([250, 250])  # fast blink = preflight running
+    blog("[2/7] LED started      fast blink = preflight running")
 
     # ── Hardware watchdog (5s timeout) ──────────────────
     wdt = WDT(timeout=5000)
@@ -199,7 +157,7 @@ def core0_main():
 
     # ── Handle preflight failures ─────────────────────
     if preflight_errors:
-        _error_mode = True  # solid LED = error
+        led.on()  # solid LED = error
         blog("")
         blog("╔══════════════════════════════════════════╗")
         blog("║  PREFLIGHT FAILED — LED IS SOLID ON      ║")
@@ -217,8 +175,7 @@ def core0_main():
                 wdt.feed()
                 blog(f"  {countdown}...")
                 time.sleep(1)
-        _error_mode = False
-        _preflight_warning = True
+        led.set_pattern([200, 200, 200, 1000])  # warning pattern for PAD
         blog("  Proceeding despite errors.")
         blog("")
 
@@ -228,7 +185,7 @@ def core0_main():
     if not sd_ok:
         blog("[FATAL] Cannot log without SD card. LED will stay solid.")
         blog("        Power cycle after inserting SD card.")
-        _error_mode = True
+        led.on()
         while True:
             wdt.feed()
             time.sleep(1)
@@ -236,7 +193,7 @@ def core0_main():
     if baro is None:
         blog("[FATAL] Cannot fly without barometer. LED will stay solid.")
         blog("        Check I2C wiring and power cycle.")
-        _error_mode = True
+        led.on()
         while True:
             wdt.feed()
             time.sleep(1)
@@ -274,7 +231,7 @@ def core0_main():
         except Exception as e:
             logger = None
             log_file = 'NONE'
-            _error_mode = True
+            led.on()
             blog(f"[{step}/7] Logger open   FAIL — {e}")
     else:
         blog(f"[{step}/7] Logger open   SKIP — no SD card")
@@ -306,6 +263,7 @@ def core0_main():
     # ── All clear ─────────────────────────────────────
     blog("")
     if not preflight_errors:
+        led.set_pattern(LED_PATTERNS[PAD])  # slow blink = ready
         blog("╔══════════════════════════════════════════╗")
         blog("║  ALL PREFLIGHT CHECKS PASSED             ║")
         blog("║                                          ║")
@@ -326,12 +284,18 @@ def core0_main():
     if logger is not None:
         logger.write_boot_log(_boot_log)
 
-    # ── Main sensor loop ──────────────────────────────
+    # ── Main sensor loop (pipelined baro reads) ────────
+    # Pipeline: pressure conversion runs during the spin-wait between frames.
+    # collect() at frame start is just an I2C register read (~1ms, no sleep).
+    # Temperature re-read every ~1s (blocking 5ms, easily fits in budget).
     interval_us = 1_000_000 // config.SAMPLE_RATE_HZ
     last_time = time.ticks_us()
     last_print = time.ticks_ms()
     loop_count = 0
+    frame_us_sum = 0
     prev_state = PAD
+    temp_every = config.SAMPLE_RATE_HZ  # re-read temp once per second
+    temp_counter = 0
 
     # Pre-allocate defaults for error frame logging
     pressure = 0.0
@@ -342,6 +306,11 @@ def core0_main():
     v3 = 0
     v5 = 0
     v9 = 0
+
+    # Pipeline priming — blocking reads to get initial values, then kick off
+    # the first async pressure conversion that will be collected next frame.
+    raw_UT = baro._read_raw_temp()
+    baro.start(temp=False)
 
     while True:
         now_us = time.ticks_us()
@@ -358,8 +327,25 @@ def core0_main():
         wdt.feed()
 
         try:
-            # ── Read sensors ──────────────────────────
-            pressure, temperature = baro.read()
+            # ── Collect pressure (conversion already done during spin-wait) ──
+            raw_UP = baro.collect()
+            pressure, temperature = baro.compensate(raw_UT, raw_UP)
+
+            # Extra fast reads at OSS=0 (~5ms each) for multi-sample averaging
+            for _ in range(config.BARO_AVG_EXTRA):
+                pressure += baro.read_extra(raw_UT)
+            if config.BARO_AVG_EXTRA:
+                pressure /= (1 + config.BARO_AVG_EXTRA)
+
+            # Re-read temperature every ~1s (blocking 5ms — still well within budget)
+            temp_counter += 1
+            if temp_counter >= temp_every:
+                temp_counter = 0
+                raw_UT = baro._read_raw_temp()
+
+            # Kick off next pressure conversion — runs during spin-wait
+            baro.start(temp=False)
+
             alt_raw = pressure_to_altitude(pressure, ground_pressure)
 
             # ── Kalman filter ─────────────────────────
@@ -368,13 +354,14 @@ def core0_main():
             # ── State machine ─────────────────────────
             state = fsm.update(alt_filt, vel_filt, now_ms)
 
-            # Set shared state for Core 1
+            # Update shared state
             _current_state = state
             if state == LANDED:
                 _landed = True
 
-            # Flush on state transitions
+            # Flush + LED update on state transitions
             if state != prev_state:
+                led.set_pattern(LED_PATTERNS.get(state, [1000, 1000]))
                 if logger is not None:
                     logger.notify_state_change(state)
                 prev_state = state
@@ -383,7 +370,7 @@ def core0_main():
             flags = 0
             if logger is not None and logger.sd_failed:
                 flags |= 0x08  # error flag
-                _error_mode = True  # solid LED = SD card lost
+                led.on()  # solid LED = SD card lost
 
             # ── Log to SD ────────────────────────────
             v3, v5, v9 = power.read_all()
@@ -402,11 +389,17 @@ def core0_main():
                     flags=flags,
                 )
 
+            # ── Measure frame time (for 1 Hz print) ──
+            frame_end_us = time.ticks_us()
+            frame_us_sum += time.ticks_diff(frame_end_us, now_us)
+
             # ── Console output (1 Hz) ────────────────
             loop_count += 1
             if time.ticks_diff(now_ms, last_print) >= 1000:
                 hz = loop_count
+                avg_frame_us = frame_us_sum // hz if hz else 0
                 loop_count = 0
+                frame_us_sum = 0
                 last_print = now_ms
                 frames = logger.frames_written if logger is not None else 0
                 print(
@@ -414,7 +407,7 @@ def core0_main():
                     f"alt={alt_filt:7.1f}m  vel={vel_filt:+6.1f}m/s  "
                     f"P={pressure:.0f}Pa  T={temperature:.1f}°C  "
                     f"3V3={v3}mV  "
-                    f"{hz}Hz  #{frames}"
+                    f"{hz}Hz {avg_frame_us}us  #{frames}"
                 )
 
             # ── Post-landing shutdown ─────────────────

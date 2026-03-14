@@ -4,7 +4,7 @@ Edit this file for your specific hardware setup.
 """
 
 # ── Software Version ────────────────────────────────────────
-VERSION = "1.6.0"
+VERSION = "1.9.0"
 
 # ── Pin Assignments ──────────────────────────────────────────
 
@@ -39,10 +39,11 @@ LED_PIN = 25       # onboard LED (no external LED on board)
 
 # ── Logging ──────────────────────────────────────────────────
 
-SAMPLE_RATE_HZ = 25       # sensor read rate (Core 0)
+SAMPLE_RATE_HZ = 50       # sensor read rate (Core 0)
+BARO_AVG_EXTRA = 1        # extra fast reads (OSS=0, ~7ms each) to average with pipelined read
 LOG_FILENAME = "/sd/flight.bin"
-LOG_FLUSH_EVERY = 25      # flush to SD every N frames (~1s at 25Hz)
-LOG_SYNC_EVERY = 3        # os.sync() every N flushes (~3s at 25Hz/25 frames)
+LOG_FLUSH_EVERY = 50      # flush to SD every N frames (~1s at 50Hz)
+LOG_SYNC_EVERY = 3        # os.sync() every N flushes (~3s at 50Hz/50 frames)
 
 # ── MPR Altitude Logger Tuning ───────────────────────────────
 

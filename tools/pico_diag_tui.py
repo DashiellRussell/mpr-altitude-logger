@@ -46,9 +46,9 @@ except ImportError:
 
 BAUD = 115200
 SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
-TUI_VERSION = "1.1.0"
-EXPECTED_DIAG_VERSION = "1.1.0"  # must match pico_diag.DIAG_VERSION on-device
-EXPECTED_FW_VERSION = "1.6.0"   # must match config.VERSION on-device
+TUI_VERSION = "1.3.0"
+EXPECTED_DIAG_VERSION = "1.3.0"  # must match pico_diag.DIAG_VERSION on-device
+EXPECTED_FW_VERSION = "1.9.0"   # must match config.VERSION on-device
 
 # Diagnostic tests — each runs a function from pico_diag.py on the Pico
 DIAG_TESTS = [
@@ -478,6 +478,18 @@ class DiagTUI:
             )
         except Exception:
             pass  # no WDT active — fine
+
+        # Stop main.py's LED Timer — it survives Ctrl-C into raw REPL.
+        # Also stop any legacy Core 1 thread if running old firmware.
+        try:
+            self.link.exec_raw(
+                "from machine import Timer\n"
+                "try:\n Timer(-1).deinit()\nexcept:\n pass\n"
+                "try:\n _core1_exit=True\nexcept:\n pass",
+                timeout=2.0,
+            )
+        except Exception:
+            pass
 
         try:
             self.sysinfo = get_sysinfo(self.link)

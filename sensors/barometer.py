@@ -44,6 +44,7 @@ class BMP180:
 
         # Pre-compute for pressure calc
         self._oss_shift = 8 - self.oss
+        self._pending = None  # tracks pipelined conversion type ('t' or 'p')
 
     def _read_calibration(self):
         """Read 11 calibration coefficients from EEPROM."""
@@ -83,6 +84,9 @@ class BMP180:
     def read(self):
         """Read compensated pressure (Pa) and temperature (°C).
 
+        Blocking — starts conversions, waits ~31ms, returns result.
+        For high-rate use, prefer the pipelined start()/collect() API.
+
         Returns:
             (pressure_pa: float, temperature_c: float)
         """
@@ -117,6 +121,99 @@ class BMP180:
         pressure = pressure + (X1 + X2 + 3791) // 16
 
         return float(pressure), temperature
+
+    # ── Pipelined API ────────────────────────────────────
+    # Overlaps ADC conversion with the spin-wait between frames.
+    #
+    # Frame timeline (25 Hz = 40ms budget):
+    #   collect()  ~3ms  (I2C read + compensate — conversion already done)
+    #   Kalman/FSM ~1ms
+    #   SD write   ~1ms
+    #   start()    ~0.1ms (I2C write to kick off next conversion)
+    #   spin-wait  ~35ms  ← conversion happens here, "for free"
+    #
+    # BMP180 temp drifts slowly, so we only read temp every N pressure
+    # frames.  _pending tracks what we started: 'p' or 't'.
+
+    def start(self, temp=False):
+        """Kick off a conversion. Call at end of frame, read with collect() next frame.
+
+        Args:
+            temp: if True, start a temperature conversion (~4.5ms).
+                  if False, start a pressure conversion (~26ms at OSS=3).
+        """
+        if temp:
+            self._write_byte(self._REG_CTRL_MEAS, self._CMD_TEMP)
+        else:
+            self._write_byte(self._REG_CTRL_MEAS, self._CMD_PRESS[self.oss])
+        self._pending = 't' if temp else 'p'
+
+    def collect(self):
+        """Read result of conversion started by start(). Returns raw value.
+
+        Returns raw int — caller must compensate. No sleep, just I2C read.
+        """
+        if self._pending == 't':
+            raw = self.i2c.readfrom_mem(self.addr, self._REG_OUT_MSB, 2)
+            return struct.unpack_from('>H', raw, 0)[0]
+        else:
+            raw = self.i2c.readfrom_mem(self.addr, self._REG_OUT_MSB, 3)
+            return ((raw[0] << 16) | (raw[1] << 8) | raw[2]) >> self._oss_shift
+
+    def compensate(self, UT, UP, oss=None):
+        """Compensate raw temp + pressure readings into physical units.
+
+        Args:
+            UT: raw temperature from collect() after a temp start()
+            UP: raw pressure from collect() after a pressure start()
+            oss: oversampling level used for UP (defaults to self.oss)
+
+        Returns:
+            (pressure_pa: float, temperature_c: float)
+        """
+        if oss is None:
+            oss = self.oss
+
+        X1 = (UT - self.AC6) * self.AC5 // 32768
+        X2 = (self.MC * 2048) // (X1 + self.MD)
+        B5 = X1 + X2
+        temperature = (B5 + 8) / 160.0
+
+        B6 = B5 - 4000
+        X1 = (self.B2 * (B6 * B6 // 4096)) // 2048
+        X2 = self.AC2 * B6 // 2048
+        X3 = X1 + X2
+        B3 = (((self.AC1 * 4 + X3) << oss) + 2) // 4
+        X1 = self.AC3 * B6 // 8192
+        X2 = (self.B1 * (B6 * B6 // 4096)) // 65536
+        X3 = (X1 + X2 + 2) // 4
+        B4 = self.AC4 * (X3 + 32768) // 65536
+        B7 = (UP - B3) * (50000 >> oss)
+
+        if B7 < 0x80000000:
+            pressure = (B7 * 2) // B4
+        else:
+            pressure = (B7 // B4) * 2
+
+        X1 = (pressure // 256) * (pressure // 256)
+        X1 = (X1 * 3038) // 65536
+        X2 = (-7357 * pressure) // 65536
+        pressure = pressure + (X1 + X2 + 3791) // 16
+
+        return float(pressure), temperature
+
+    def read_extra(self, raw_UT):
+        """Quick blocking pressure read at OSS=0 (~5ms). For multi-sample averaging.
+
+        Uses OSS=0 (fastest conversion) and compensates with the given raw temp.
+        Returns compensated pressure in Pa.
+        """
+        self._write_byte(self._REG_CTRL_MEAS, self._CMD_PRESS[0])  # OSS=0
+        time.sleep_ms(5)
+        raw = self.i2c.readfrom_mem(self.addr, self._REG_OUT_MSB, 3)
+        UP = ((raw[0] << 16) | (raw[1] << 8) | raw[2]) >> 8  # shift=8 for OSS=0
+        p, _ = self.compensate(raw_UT, UP, oss=0)
+        return p
 
     def _read_byte(self, reg):
         return self.i2c.readfrom_mem(self.addr, reg, 1)[0]

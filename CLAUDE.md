@@ -16,8 +16,8 @@ You are working on MPR Altitude Logger — a dual-core Raspberry Pi Pico (RP2040
 Core 0 (time-critical, 25 Hz):
   Preflight checks → Sensor read → Kalman filter → State machine → SD card log
 
-Core 1 (slower, ~20 Hz):
-  LED status patterns (blink = running, solid = error)
+LED: Virtual Timer soft-IRQ callback (25ms tick)
+  Pattern blink driven by timer — no _thread, no cross-core GIL contention
 ```
 
 This is a **pure data logger** — no deployment hardware, no buzzer, no ARM switch. All flight states are tracked for logging only.
@@ -31,7 +31,7 @@ Shared state between cores uses simple globals (acceptable for MicroPython's coo
 ```
 avionics/
 ├── config.py                 # Pin assignments, thresholds, tuning constants
-├── main.py                   # Entry point — dual-core orchestration
+├── main.py                   # Entry point — single-core + Timer LED
 ├── hw_check.py               # Standalone first-boot hardware verification
 ├── ground_test.py            # Pre-flight check (depends on avionics modules)
 ├── sensors/

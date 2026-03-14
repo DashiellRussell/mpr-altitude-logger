@@ -37,25 +37,19 @@ def run():
         count += 1
     print('    {} frames'.format(count))
 
-    # Phase 2: Core 0 + Core 1
-    print('  Phase 2: Core 0 + Core 1 ({} sec)...'.format(duration_ms // 1000))
+    # Phase 2: Core 0 + Timer LED (matches flight firmware architecture)
+    print('  Phase 2: Core 0 + Timer LED ({} sec)...'.format(duration_ms // 1000))
 
-    import _thread
-    global _core1_stop, _core1_heartbeat
-    _core1_stop = False
-    _core1_heartbeat = time.ticks_ms()
+    from machine import Pin, Timer
+    led_pin = Pin(config.LED_PIN, Pin.OUT)
+    _hb_time = [time.ticks_ms()]  # list so callback can mutate
 
-    def _stress_core1():
-        global _core1_stop, _core1_heartbeat
-        from machine import Pin
-        led = Pin(config.LED_PIN, Pin.OUT)
-        while not _core1_stop:
-            led.toggle()
-            _core1_heartbeat = time.ticks_ms()
-            time.sleep_ms(25)
-        led.value(0)
+    def _led_cb(t):
+        led_pin.toggle()
+        _hb_time[0] = time.ticks_ms()
 
-    _thread.start_new_thread(_stress_core1, ())
+    tmr = Timer(-1)  # virtual timer — RP2040 MicroPython only supports Timer(-1)
+    tmr.init(period=25, mode=Timer.PERIODIC, callback=_led_cb)
     time.sleep_ms(100)
 
     k2 = AltitudeKalman()
@@ -81,13 +75,13 @@ def run():
 
         now = time.ticks_ms()
         if time.ticks_diff(now, last_hb_check) >= 1000:
-            hb_age = time.ticks_diff(now, _core1_heartbeat)
+            hb_age = time.ticks_diff(now, _hb_time[0])
             if hb_age < 500:
                 core1_alive_s += 1.0
             last_hb_check = now
 
-    _core1_stop = True
-    time.sleep_ms(100)
+    tmr.deinit()
+    led_pin.value(0)
 
     print('    {} frames'.format(count))
 
@@ -95,7 +89,7 @@ def run():
     print('  {:<16s}  {:>8.0f}  {:>8.0f}  {:>8.1f}'.format(
         'Core 0 only:', solo_stats.mean, solo_stats.hi, solo_stats.std()))
     print('  {:<16s}  {:>8.0f}  {:>8.0f}  {:>8.1f}'.format(
-        'Core 0+1:', dual_stats.mean, dual_stats.hi, dual_stats.std()))
+        'Core 0+Timer:', dual_stats.mean, dual_stats.hi, dual_stats.std()))
 
     jitter_avg = dual_stats.mean - solo_stats.mean
     jitter_max = dual_stats.hi - solo_stats.hi
@@ -107,11 +101,11 @@ def run():
     else:
         _warn('Max frame time ({:.0f} us) exceeds budget'.format(dual_stats.hi))
 
-    print('  Core 1 alive: {:.0f} / {:.0f} seconds'.format(core1_alive_s, duration_ms / 1000))
+    print('  Timer LED alive: {:.0f} / {:.0f} seconds'.format(core1_alive_s, duration_ms / 1000))
     if core1_alive_s >= (duration_ms / 1000) - 2:
-        _ok('Core 1 heartbeat stable')
+        _ok('Timer LED heartbeat stable')
     else:
-        _warn('Core 1 heartbeat gaps detected')
+        _warn('Timer LED heartbeat gaps detected')
 
     del k, k2, fsm, fsm2
     gc.collect()
