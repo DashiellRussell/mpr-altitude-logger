@@ -33,12 +33,13 @@ FRAME_FORMAT = '<IBfffffHHHB'
 FRAME_SIZE = struct.calcsize(FRAME_FORMAT)  # 32 bytes
 
 
+_has_os_sync = hasattr(os, 'sync')
+
+
 def _try_sync():
     """Force FAT metadata to disk if os.sync() is available."""
-    try:
+    if _has_os_sync:
         os.sync()
-    except AttributeError:
-        pass  # MicroPython build without os.sync() — flush-only fallback
 
 
 def _dir_exists(path):
@@ -50,22 +51,37 @@ def _dir_exists(path):
 
 
 def _get_name_override():
-    """Read flight name override from SD card, or return None."""
+    """Read flight name override from SD card (one-shot — deletes after reading)."""
     try:
         with open('/sd/_flight_name.txt', 'r') as f:
             name = f.read().strip()
         if name:
+            try:
+                os.remove('/sd/_flight_name.txt')
+            except OSError:
+                pass
             return name
     except OSError:
         pass
     return None
 
 
+def _file_exists(path):
+    try:
+        os.stat(path)
+        return True
+    except OSError:
+        return False
+
+
 def next_flight_dir():
     """Find the next available flight directory path (without creating it)."""
     override = _get_name_override()
     if override:
-        return '/sd/' + override
+        override_dir = '/sd/' + override
+        # If override dir already has flight.bin, fall through to auto-numbering
+        if not _file_exists(override_dir + '/flight.bin'):
+            return override_dir
 
     idx = 1
     while True:
@@ -83,28 +99,36 @@ def next_log_filename(base_path=None):
 class FlightLogger:
     """Writes binary telemetry frames to a per-flight folder on SD card."""
 
-    def __init__(self, filename=None, flush_every=25, sync_every=10):
+    def __init__(self, filename=None, flush_every=25, sync_every=3):
         self.flush_every = flush_every
-        self.sync_every = sync_every  # os.sync() every N flushes (not every flush)
+        self.sync_every = sync_every  # os.sync() every N flushes
         self._file = None
         self._count = 0
         self._flush_count = 0
         self._total_frames = 0
         self._sd_failed = False
         self._flight_dir = None
+        # Pre-allocated write buffer: sync header + frame data (zero allocation in hot loop)
+        self._write_buf = bytearray(2 + FRAME_SIZE)
+        self._write_buf[0] = 0xAA
+        self._write_buf[1] = 0x55
 
     def open(self):
         """Create flight folder and open flight.bin inside it."""
         flight_dir = next_flight_dir()
 
-        # Create directory (ok if override folder already exists)
+        # Create directory (ok if it already exists, but verify it was created)
         try:
             os.mkdir(flight_dir)
         except OSError:
-            pass
+            if not _dir_exists(flight_dir):
+                raise
 
         self._flight_dir = flight_dir
         fname = flight_dir + '/flight.bin'
+
+        if not _has_os_sync:
+            print('[SD] WARNING: os.sync() unavailable — data at risk if power lost')
 
         self._file = open(fname, 'wb')
         self._count = 0
@@ -152,22 +176,15 @@ class FlightLogger:
             return
 
         try:
-            frame = struct.pack(
-                FRAME_FORMAT,
-                timestamp_ms,
-                state,
-                pressure_pa,
-                temperature_c,
-                alt_raw,
-                alt_filtered,
-                vel_filtered,
-                v_3v3_mv,
-                v_5v_mv,
-                v_9v_mv,
-                flags,
+            # Pack into pre-allocated buffer (zero allocation)
+            struct.pack_into(
+                FRAME_FORMAT, self._write_buf, 2,
+                timestamp_ms, state,
+                pressure_pa, temperature_c,
+                alt_raw, alt_filtered, vel_filtered,
+                v_3v3_mv, v_5v_mv, v_9v_mv, flags,
             )
-            self._file.write(FRAME_HEADER)
-            self._file.write(frame)
+            self._file.write(self._write_buf)
 
             self._count += 1
             self._total_frames += 1
@@ -175,15 +192,18 @@ class FlightLogger:
             if self._count >= self.flush_every:
                 self._file.flush()
                 self._flush_count += 1
-                # os.sync() is expensive — only do it periodically, not every flush
                 if self._flush_count >= self.sync_every:
                     _try_sync()
                     self._flush_count = 0
                 self._count = 0
-        except Exception as e:
-            # SD card failed — log details for diagnosis then stop writing
-            print(f"[SD] Write failed at frame #{self._total_frames}: {e}")
-            self._sd_failed = True
+        except OSError as e:
+            # SD write failed — retry once before giving up
+            try:
+                self._file.write(self._write_buf)
+                self._total_frames += 1
+            except OSError:
+                print(f"[SD] Write failed at frame #{self._total_frames}: {e}")
+                self._sd_failed = True
 
     def notify_state_change(self, state):
         """Force immediate flush+sync on state transitions (captures critical moments)."""

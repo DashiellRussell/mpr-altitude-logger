@@ -17,6 +17,13 @@ def mount():
     """Mount SD card at /sd. Returns True on success."""
     global _sd, _vfs
     import time
+
+    # Clear any stale mount (e.g. from interrupted main.py)
+    try:
+        os.umount("/sd")
+    except OSError:
+        pass
+
     try:
         cs = Pin(config.SPI_CS, Pin.OUT)
         cs.value(1)
@@ -53,7 +60,7 @@ def unmount():
     global _sd, _vfs
     try:
         os.umount("/sd")
-    except:
+    except OSError:
         pass
     _sd = None
     _vfs = None
@@ -64,7 +71,7 @@ def is_mounted():
     try:
         os.listdir("/sd")
         return True
-    except:
+    except OSError:
         return False
 
 
@@ -73,7 +80,7 @@ def free_space_mb():
     try:
         stat = os.statvfs("/sd")
         return (stat[0] * stat[3]) / (1024 * 1024)
-    except:
+    except OSError:
         return -1
 
 
