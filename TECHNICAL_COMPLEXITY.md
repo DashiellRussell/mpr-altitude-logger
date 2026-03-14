@@ -173,9 +173,85 @@ That `3847us` is the average frame processing time. The system instruments its o
 
 ---
 
-## Zero-Allocation Binary Logging — Pre-Allocated Buffers in a MicroPython Hot Loop
+## A Custom Binary File Format — `.bin` Files With Their Own Spec
 
-The flight logger (`logging/datalog.py`) writes 34-byte binary frames: 2 sync bytes + 32 data bytes. At 50 Hz, that's 1,700 bytes/second. An 8GB SD card gives ~55 days of continuous recording.
+This project doesn't write CSV. It doesn't write JSON. It invented its own binary file format.
+
+The `.bin` files begin with a proprietary file header:
+
+```
+Bytes 0-5:   b'RKTLOG'          ← 6-byte magic number (like PNG has \x89PNG, RKTLOG has... RKTLOG)
+Bytes 6-7:   u16 version        ← format version (currently v2, because there was already a v1)
+Bytes 8-9:   u16 frame_size     ← 32 bytes per frame
+```
+
+A magic number. A version field. A self-describing frame size. This is the same design pattern used by PNG, ELF, and ZIP. For a pressure sensor log file.
+
+After the header, every frame is preceded by a sync marker — `0xAA 0x55` — borrowed from telecommunications protocols. These two bytes exist so that if power cuts mid-write and corrupts a frame, the decoder can byte-scan forward until it finds the next `\xAA\x55` and resync. Corruption recovery. For an SD card in a model rocket.
+
+Each frame is 32 bytes of packed binary data, little-endian (RP2040 native byte order):
+
+```
+Offset  Type   Field              Notes
+──────  ─────  ─────────────────  ──────────────────────────────────────
+0       u32    timestamp_ms       Millisecond-precision flight clock
+4       u8     state              7 possible values, gets a whole byte
+5       f32    pressure_pa        Raw barometric pressure
+9       f32    temperature_c      Sensor temperature
+13      f32    alt_raw_m          Unfiltered barometric altitude
+17      f32    alt_filtered_m     Kalman-filtered altitude
+21      f32    vel_filtered_ms    Kalman-derived velocity (no accelerometer)
+25      u16    v_3v3_mv           3.3V rail in millivolts
+27      u16    v_5v_mv            5V rail in millivolts
+29      u16    v_9v_mv            9V rail in millivolts
+31      u8     flags              Bitfield: bit3=error, bits 0-2 reserved
+```
+
+Struct format string: `<IBfffffHHHB`. Every type hand-picked for minimum size — `u8` for state (only 7 values need 3 bits, gets 8), `u16` for millivolt readings (range 0–65535, enough for 65V — overkill for a 9V rail), a flags byte with individual bit assignments and 5 reserved bits for future expansion. Of a format that has already been through one version bump.
+
+The flags byte has legacy bits. Bits 0-2 were originally `ARMED`, `DROGUE_FIRED`, and `MAIN_FIRED` — from when the system was going to control pyrotechnic charges. The board has no pyrotechnic charges. The bits are always zero. They're kept for backward compatibility with v1 decoders.
+
+### Three Decoders for One File Format
+
+The custom format requires custom decoders. There are three:
+
+1. **Python decoder** (`tools/decode_log.py`, 237 lines) — reads `.bin` files, outputs CSV, optionally generates 4-subplot matplotlib charts (altitude, velocity, pressure, power rails). Handles both v1 and v2 frame formats. Reports skipped bytes for corruption diagnostics. Prints a full flight summary with state transition timestamps.
+
+2. **TypeScript decoder** (`tools/ground-station/packages/shared/src/decoder.ts`, 150 lines) — reimplements the exact same binary parsing in TypeScript for the web dashboard. Uses `DataView` with little-endian reads. Field-by-field offset table defined in `constants.ts`. Same sync-byte scanning. Same version detection. Same v1/v2 branching.
+
+3. **Python simulation harness decoder** (`tests/sim_harness.py`) — imports and uses `decode_log.py` to verify encode/decode round-trips in the integration tests.
+
+The TypeScript decoder mirrors the Python one so precisely that the constants file (`constants.ts`, 113 lines) duplicates every config value — Kalman defaults, state machine thresholds, voltage rail specs, ADC reference voltage, flag bitmasks — because the ground station needs to understand the same binary format that the Pico writes. Two languages. Same spec. Maintained in parallel.
+
+The constants file even defines state colors for terminal and web display:
+```typescript
+export const STATE_COLORS: Record<string, string> = {
+  PAD: 'white',
+  BOOST: 'red',
+  COAST: 'yellow',
+  APOGEE: 'green',
+  DROGUE: 'cyan',
+  MAIN: 'blue',
+  LANDED: 'magenta',
+};
+```
+
+Seven colors. For seven states. Of a data logger.
+
+### Each Flight Gets Its Own Folder
+
+Flight data isn't dumped loose onto the SD card. Each flight creates a numbered directory:
+
+```
+/sd/flight_001/
+    flight.bin         ← the proprietary binary telemetry
+    preflight.txt      ← preflight check results and metadata
+    boot.txt           ← complete serial boot output captured and saved
+```
+
+Auto-incrementing folder numbers prevent data overwrites on reboot. There's even a naming override mechanism — drop a `_flight_name.txt` file on the SD card and the system reads it, uses it as the folder name, and deletes the file (one-shot consumption). If the override name already has a `flight.bin`, it falls through to auto-numbering. Edge case handling for a folder naming feature.
+
+### Zero-Allocation Writes
 
 The write buffer is pre-allocated at init:
 ```python
@@ -190,19 +266,9 @@ struct.pack_into(FRAME_FORMAT, self._write_buf, 2, ...)
 self._file.write(self._write_buf)
 ```
 
-No `struct.pack()` (which allocates a new bytes object). `pack_into()` writes directly into the pre-allocated buffer. Zero heap allocation in the hot loop. Because MicroPython's garbage collector is stop-the-world, and a GC pause during a 50 Hz sensor read could cause a missed frame.
+No `struct.pack()` (which allocates a new `bytes` object). `pack_into()` writes directly into the pre-allocated buffer. Zero heap allocation in the hot loop. Because MicroPython's garbage collector is stop-the-world, and a GC pause during a 50 Hz sensor read could cause a missed frame.
 
-The binary format:
-```
-Sync:    \xAA\x55
-Frame:   u32 timestamp_ms | u8 state | f32 pressure_pa | f32 temperature_c |
-         f32 alt_raw_m | f32 alt_filtered_m | f32 vel_filtered_ms |
-         u16 v_3v3_mv | u16 v_5v_mv | u16 v_9v_mv | u8 flags
-```
-
-Little-endian. Struct format string: `<IBfffffHHHB`. Every field type chosen for minimum size — `u8` for state (only 7 values), `u16` for millivolt readings, a flags byte with individual bits.
-
-The file starts with a 10-byte header: `RKTLOG` magic (6B) + `u16` version + `u16` frame size. Versioned binary format. For future backward compatibility. Of a student rocketry data logger.
+At 50 Hz with 34-byte frames (2 sync + 32 data), that's 1,700 bytes/second. An 8GB SD card gives ~55 days of continuous recording. For a flight that lasts 60 seconds.
 
 ---
 
