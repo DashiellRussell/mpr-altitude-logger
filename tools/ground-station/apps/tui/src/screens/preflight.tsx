@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import Spinner from 'ink-spinner';
+import { readFileSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { rawToVoltage, RAIL_SPECS, sparkline as makeSparkline } from '@mpr/shared';
 import { usePico } from '../hooks/use-pico.js';
 import { useTelemetry } from '../hooks/use-telemetry.js';
@@ -28,8 +31,20 @@ import {
   LED_DETAIL_CODE,
 } from '../serial/commands.js';
 
-const TUI_VERSION = '1.9.0';
-const EXPECTED_FW_VERSION = '1.9.0';
+// Read expected firmware version from config.py — single source of truth
+function readFwVersion(): string {
+  try {
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const configPath = resolve(__dirname, '..', '..', '..', '..', '..', '..', 'config.py');
+    const content = readFileSync(configPath, 'utf-8');
+    const match = content.match(/VERSION\s*=\s*["']([^"']+)["']/);
+    return match ? match[1] : '?.?.?';
+  } catch {
+    return '?.?.?';
+  }
+}
+
+const EXPECTED_FW_VERSION = readFwVersion();
 const DASH_WIDTH = 120;
 const LEFT_W = 58;
 const RIGHT_W = 60;
@@ -937,9 +952,9 @@ export function Preflight({ port }: Props) {
               <Text dimColor> Firmware  --</Text>
             )}
             {sysinfo.avionicsVersion ? (
-              <Text> Avionics  <Text bold>v{sysinfo.avionicsVersion}</Text>{'    '}TUI  <Text bold>v{TUI_VERSION}</Text>
-                {sysinfo.avionicsVersion !== EXPECTED_FW_VERSION && sysinfo.avionicsVersion !== '?' && (
-                  <Text color="red" bold>  VERSION MISMATCH</Text>
+              <Text> Avionics  <Text bold>v{sysinfo.avionicsVersion}</Text>{'    '}Expected  <Text bold>v{EXPECTED_FW_VERSION}</Text>
+                {sysinfo.avionicsVersion !== EXPECTED_FW_VERSION && sysinfo.avionicsVersion !== '?' && EXPECTED_FW_VERSION !== '?.?.?' && (
+                  <Text color="red" bold>  VERSION MISMATCH — run pnpm deploy:pico</Text>
                 )}
               </Text>
             ) : (

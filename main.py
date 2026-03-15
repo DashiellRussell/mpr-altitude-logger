@@ -315,6 +315,16 @@ def core0_main():
     # Pipeline priming — blocking reads to get initial values, then kick off
     # the first async pressure conversion that will be collected next frame.
     raw_UT = baro._read_raw_temp()
+
+    # Prime Kalman filter — run 20 readings through so it converges before
+    # we start logging.  Prevents the initial altitude spike from noisy
+    # first samples hitting the filter at high uncertainty.
+    for _ in range(20):
+        wdt.feed()
+        p, _ = baro.read()
+        alt = pressure_to_altitude(p, ground_pressure)
+        kalman.update(alt, 1.0 / config.SAMPLE_RATE_HZ)
+
     baro.start(temp=False)
 
     while True:
