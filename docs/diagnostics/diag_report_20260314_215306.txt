@@ -1,0 +1,35 @@
+MPR Altitude Logger — Pico Diagnostic Report
+Date: 2026-03-14 21:53:06
+Firmware: v1.6.0
+Diag: v1.1.0
+TUI: v1.1.0
+MicroPython: 3.4.0; MicroPython v1.27.0 on 2025-12-09
+CPU: 200 MHz
+RAM free: 196,160 bytes
+
+Summary: 1 passed, 0 warn, 0 failed
+============================================================
+
+────────────────────────────────────────────────────────────
+Sensor Bench  —  PASS  (0:35)
+────────────────────────────────────────────────────────────
+
+
+  Sensor Bench — BMP180 timing + noise (1000 reads) 
+  ──────────────────────────────────────────────────
+  Reading 1000 samples .......... done
+
+  Read Timing        min=33303.0 us  avg=33966.0 us  max=46195.0 us  std=740.1 us
+
+  Timing Distribution (us):
+  32000-34000 |############################## (908)
+  34000-36000 |##                             (89)
+  40000-50000 |                               (3)
+
+  Pressure Noise:
+    Std: 12.3 Pa  (~1.02 m altitude noise)
+    Range: 205414-205480 Pa (66 Pa p2p)
+
+  Temperature:
+    Avg: 27.5 C  Std: 0.06 C
+  [OK] No clock stretch events detected

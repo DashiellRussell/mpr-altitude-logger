@@ -1,5 +1,5 @@
 import { FlightState, type FlightFrame, type DecodedFlight } from './types.js';
-import { FILE_MAGIC, FILE_HEADER_SIZE, FRAME_V1, FRAME_V2, STATE_NAMES } from './constants.js';
+import { FILE_MAGIC, FILE_HEADER_SIZE, FRAME_V1, FRAME_V2, FRAME_V3, STATE_NAMES } from './constants.js';
 import { decodeFlags } from './utils.js';
 
 /**
@@ -28,7 +28,7 @@ function readField(view: DataView, offset: number, type: string): number {
 function decodeFrame(
   view: DataView,
   offset: number,
-  frameSpec: typeof FRAME_V1 | typeof FRAME_V2,
+  frameSpec: typeof FRAME_V1 | typeof FRAME_V2 | typeof FRAME_V3,
   version: number,
 ): FlightFrame | null {
   if (offset + frameSpec.size > view.byteLength) return null;
@@ -62,6 +62,15 @@ function decodeFrame(
     frame.v_batt_mv = values.v_batt_mv;
   }
 
+  if (version >= 3) {
+    frame.frame_us = values.frame_us;
+    frame.flush_us = values.flush_us;
+    frame.free_kb = values.free_kb;
+    frame.cpu_temp_c = values.cpu_temp_c;
+    frame.i2c_errors = values.i2c_errors;
+    frame.overruns = values.overruns;
+  }
+
   return frame;
 }
 
@@ -91,7 +100,7 @@ export function decodeBinFile(buffer: Uint8Array): DecodedFlight {
   }
   // If no header, try raw decode starting at offset 0
 
-  const frameSpec = version >= 2 ? FRAME_V2 : FRAME_V1;
+  const frameSpec = version >= 3 ? FRAME_V3 : version >= 2 ? FRAME_V2 : FRAME_V1;
   const frames: FlightFrame[] = [];
   let skippedBytes = 0;
 
@@ -136,14 +145,18 @@ export function framesToCsv(frames: FlightFrame[], version: number): string {
   const voltageFields =
     version >= 2 ? ['v_3v3_mv', 'v_5v_mv', 'v_9v_mv'] : ['v_batt_mv'];
 
-  const fields = [...baseFields, ...voltageFields, 'flags', 'state_name', 'flags_str'];
+  const diagFields =
+    version >= 3 ? ['frame_us', 'flush_us', 'free_kb', 'cpu_temp_c', 'i2c_errors', 'overruns'] : [];
+
+  const fields = [...baseFields, ...voltageFields, 'flags', ...diagFields, 'state_name', 'flags_str'];
 
   const header = fields.join(',');
   const rows = frames.map((f) => {
     const vals = baseFields.map((k) => f[k as keyof FlightFrame]);
     const vVals = voltageFields.map((k) => f[k as keyof FlightFrame] ?? '');
+    const diagVals = diagFields.map((k) => f[k as keyof FlightFrame] ?? '');
     const flagsStr = f.flags_list.length ? f.flags_list.join('|') : 'SAFE';
-    return [...vals, ...vVals, f.flags, f.state_name, flagsStr].join(',');
+    return [...vals, ...vVals, f.flags, ...diagVals, f.state_name, flagsStr].join(',');
   });
 
   return [header, ...rows].join('\n');

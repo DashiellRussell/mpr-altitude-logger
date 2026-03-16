@@ -15,6 +15,7 @@ import { StateTimeline } from '../components/state-timeline.js';
 import { SimCompare } from '../components/sim-compare.js';
 import { KeyBar } from '../components/key-bar.js';
 import { LogViewer } from '../components/log-viewer.js';
+import { DiagnosticsPanel } from '../components/diagnostics-panel.js';
 
 const DASH_WIDTH = 120;
 
@@ -33,7 +34,7 @@ const SYSTEM_VOLUMES = new Set([
 ]);
 
 /** Scan a directory for flight folders (subdirs containing flight.bin) */
-function scanForFlightFolders(dir: string, volume: string): FoundFile[] {
+function scanForFlightFolders(dir: string, source: string): FoundFile[] {
   const results: FoundFile[] = [];
   try {
     const entries = readdirSync(dir);
@@ -47,14 +48,37 @@ function scanForFlightFolders(dir: string, volume: string): FoundFile[] {
           const fStat = statSync(binPath);
           if (fStat.size > 50) {
             const hasPreflight = existsSync(join(entryPath, 'preflight.txt'));
+            const hasCrashTxt = existsSync(join(entryPath, 'crash.txt'));
+            // Read log version from binary header (bytes 6-7, u16 LE)
+            let logVersion: number | null = null;
+            try {
+              const fd = readFileSync(binPath);
+              if (fd.length >= 10 && fd.toString('ascii', 0, 6) === 'RKTLOG') {
+                logVersion = fd.readUInt16LE(6);
+              }
+            } catch { /* skip */ }
+            let isCrashReboot = false;
+            let fwVersion: string | null = null;
+            if (hasPreflight) {
+              try {
+                const pf = readFileSync(join(entryPath, 'preflight.txt'), 'utf-8');
+                isCrashReboot = pf.includes('Crash reboot: YES');
+                const verMatch = pf.match(/Avionics v([^\s\n]+)/);
+                if (verMatch) fwVersion = verMatch[1];
+              } catch { /* skip */ }
+            }
             results.push({
               path: binPath,
-              name: entry,           // folder name as display name
+              name: entry,
               size: fStat.size,
               mtime: fStat.mtime,
-              volume,
+              source,
               folder: entry,
               hasPreflight,
+              isCrashReboot,
+              hasCrashTxt,
+              fwVersion,
+              logVersion,
             });
           }
         }
@@ -65,7 +89,7 @@ function scanForFlightFolders(dir: string, volume: string): FoundFile[] {
 }
 
 /** Scan a directory for legacy flat .bin files */
-function scanForFlatBinFiles(dir: string, volume: string): FoundFile[] {
+function scanForFlatBinFiles(dir: string, source: string): FoundFile[] {
   const results: FoundFile[] = [];
   try {
     const files = readdirSync(dir).filter(f => f.endsWith('.bin'));
@@ -74,7 +98,7 @@ function scanForFlatBinFiles(dir: string, volume: string): FoundFile[] {
       try {
         const fStat = statSync(fPath);
         if (fStat.size > 50) {
-          results.push({ path: fPath, name: f, size: fStat.size, mtime: fStat.mtime, volume, folder: null, hasPreflight: false });
+          results.push({ path: fPath, name: f, size: fStat.size, mtime: fStat.mtime, source, folder: null, hasPreflight: false, isCrashReboot: false, hasCrashTxt: false, fwVersion: null, logVersion: null });
         }
       } catch { /* skip unreadable files */ }
     }
@@ -97,30 +121,51 @@ function findBinFilesOnVolumes(): FoundFile[] {
         const st = statSync(volPath);
         if (!st.isDirectory()) continue;
 
+        const sdSource = `SD: ${vol}`;
+
         // Scan for flight folders (new per-flight layout)
-        results.push(...scanForFlightFolders(volPath, vol));
+        results.push(...scanForFlightFolders(volPath, sdSource));
 
         // Scan root for legacy flat .bin files
-        results.push(...scanForFlatBinFiles(volPath, vol));
+        results.push(...scanForFlatBinFiles(volPath, sdSource));
 
         // Also check /sd subdirectory (some card readers mount the Pico's filesystem)
         const sdPath = join(volPath, 'sd');
         if (existsSync(sdPath)) {
-          results.push(...scanForFlightFolders(sdPath, vol));
-          results.push(...scanForFlatBinFiles(sdPath, vol));
+          results.push(...scanForFlightFolders(sdPath, sdSource));
+          results.push(...scanForFlatBinFiles(sdPath, sdSource));
         }
       } catch { /* skip inaccessible volumes */ }
     }
   } catch { /* /Volumes not readable */ }
 
-  // Sort by folder name descending (newest/highest number first), then by mtime
+  // Sort by folder name ascending for session grouping
   results.sort((a, b) => {
-    // Folder-based flights sort by name (descending) so flight_002 > flight_001
-    if (a.folder && b.folder) return b.folder.localeCompare(a.folder);
-    // Folder-based flights come before legacy flat files
+    if (a.folder && b.folder) return a.folder.localeCompare(b.folder);
     if (a.folder && !b.folder) return -1;
     if (!a.folder && b.folder) return 1;
-    // Legacy flat files sort by mtime
+    return a.mtime.getTime() - b.mtime.getTime();
+  });
+
+  // Group sequential crash reboots into sessions
+  // A session starts with a normal boot and includes all following crash reboots
+  let sessionLabel: string | undefined;
+  for (const f of results) {
+    if (f.folder && !f.isCrashReboot) {
+      // Normal boot — starts a new session
+      sessionLabel = f.folder;
+      f.sessionGroup = undefined; // session leader, no indent
+    } else if (f.folder && f.isCrashReboot && sessionLabel) {
+      // Crash reboot — belongs to the previous session
+      f.sessionGroup = sessionLabel;
+    }
+  }
+
+  // Re-sort descending for display (newest first)
+  results.sort((a, b) => {
+    if (a.folder && b.folder) return b.folder.localeCompare(a.folder);
+    if (a.folder && !b.folder) return -1;
+    if (!a.folder && b.folder) return 1;
     return b.mtime.getTime() - a.mtime.getTime();
   });
   return results;
@@ -161,80 +206,103 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// ── Loading screen component ─────────────────────────────────────
-
-type LoadPhase = 'scanning' | 'selecting' | 'copying' | 'parsing' | 'ready' | 'error';
+// ── File picker component ─────────────────────────────────────
 
 interface FoundFile {
   path: string;
   name: string;
   size: number;
   mtime: Date;
-  volume: string;
+  source: string;             // e.g. "SD: ROCKET" or "local"
   folder: string | null;       // folder name (e.g. "flight_001") or null for legacy flat files
   hasPreflight: boolean;       // true if preflight.txt exists alongside the .bin
+  isCrashReboot: boolean;      // true if preflight.txt says "Crash reboot: YES"
+  hasCrashTxt: boolean;        // true if crash.txt exists in the flight folder
+  fwVersion: string | null;    // firmware version from preflight.txt (e.g. "1.14.0")
+  logVersion: number | null;   // binary log format version from file header (1, 2, or 3)
+  sessionGroup?: string;       // groups sequential crash reboots under one label
 }
 
-interface LoadStep {
-  label: string;
-  detail?: string;
-  status: 'pending' | 'active' | 'done' | 'error';
+/** Scan local flights/ directory for .bin files */
+function findLocalBinFiles(): FoundFile[] {
+  const results: FoundFile[] = [];
+  const flightsDir = getFlightsDir();
+  if (!existsSync(flightsDir)) return results;
+  try {
+    const files = readdirSync(flightsDir).filter(f => f.endsWith('.bin'));
+    for (const f of files) {
+      const fPath = join(flightsDir, f);
+      try {
+        const fStat = statSync(fPath);
+        if (fStat.size > 50) {
+          results.push({
+            path: fPath,
+            name: f,
+            size: fStat.size,
+            mtime: fStat.mtime,
+            source: 'local',
+            folder: null,
+            hasPreflight: false,
+            isCrashReboot: false,
+            hasCrashTxt: false,
+            fwVersion: null,
+            logVersion: null,
+          });
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* skip */ }
+  // Sort by mtime descending (newest first)
+  results.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+  return results;
 }
 
-function PostflightLoader({ onReady }: { onReady: (binPath: string) => void }) {
+function PostflightFilePicker({ onReady }: { onReady: (binPath: string) => void }) {
   const { exit } = useApp();
-  const [phase, setPhase] = useState<LoadPhase>('scanning');
   const [files, setFiles] = useState<FoundFile[]>([]);
   const [selected, setSelected] = useState(0);
-  const [steps, setSteps] = useState<LoadStep[]>([
-    { label: 'Scanning mounted volumes', status: 'active' },
-    { label: 'Locating flight logs', status: 'pending' },
-    { label: 'Copying to local storage', status: 'pending' },
-    { label: 'Locating simulation data', status: 'pending' },
-    { label: 'Decoding flight frames', status: 'pending' },
-  ]);
-  const [errorMsg, setErrorMsg] = useState('');
-
-  const updateStep = useCallback((index: number, updates: Partial<LoadStep>) => {
-    setSteps(prev => prev.map((s, i) => i === index ? { ...s, ...updates } : s));
-  }, []);
-
-  const activateStep = useCallback((index: number) => {
-    setSteps(prev => prev.map((s, i) => {
-      if (i === index) return { ...s, status: 'active' };
-      return s;
-    }));
-  }, []);
+  const [scanning, setScanning] = useState(true);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
 
   // Scan on mount
   useEffect(() => {
     const timer = setTimeout(() => {
-      const found = findBinFilesOnVolumes();
-      updateStep(0, { status: 'done', detail: `/Volumes/ — ${found.length > 0 ? found[0].volume : 'no external volumes'}` });
+      // Gather SD card files (source already set by scanner)
+      const sdFiles = findBinFilesOnVolumes();
 
-      if (found.length === 0) {
-        updateStep(1, { status: 'error', detail: 'No .bin flight logs found' });
-        setPhase('error');
-        setErrorMsg('Insert SD card and try again, or: pnpm dev:tui -- postflight <file.bin>');
-        return;
+      // Gather local flights/ files
+      const localFiles = findLocalBinFiles();
+
+      // Merge: SD files first, then local (deduplicate by size+name)
+      const seen = new Set<string>();
+      const merged: FoundFile[] = [];
+      for (const f of sdFiles) {
+        merged.push(f);
+        seen.add(`${f.name}:${f.size}`);
+      }
+      for (const f of localFiles) {
+        // Skip if a same-name+size file already came from SD
+        const key = `${f.name}:${f.size}`;
+        if (!seen.has(key)) {
+          merged.push(f);
+        }
       }
 
-      setTimeout(() => {
-        updateStep(1, {
-          status: 'done',
-          detail: `${found.length} log${found.length > 1 ? 's' : ''} on ${found[0].volume}`,
-        });
-        setFiles(found);
-        setPhase('selecting');
-      }, 500);
-    }, 600);
+      setFiles(merged);
+      setScanning(false);
+    }, 300);
     return () => clearTimeout(timer);
   }, []);
 
   const loadFile = useCallback((file: FoundFile) => {
-    setPhase('copying');
-    activateStep(2);
+    // If the file is already local, just open it
+    if (file.source === 'local') {
+      onReady(file.path);
+      return;
+    }
 
+    // Copy from SD to local flights/
+    setCopyStatus('Copying...');
     setTimeout(() => {
       try {
         const flightsDir = getFlightsDir();
@@ -242,154 +310,97 @@ function PostflightLoader({ onReady }: { onReady: (binPath: string) => void }) {
           mkdirSync(flightsDir, { recursive: true });
         }
 
+        // Extract volume name from source (e.g. "SD: ROCKET" → "ROCKET")
+        const volName = file.source.replace(/^SD:\s*/, '');
         const destName = file.folder
-          ? `${file.volume}_${file.folder}.bin`
-          : `${file.volume}_${file.name}`;
+          ? `${volName}_${file.folder}.bin`
+          : `${volName}_${file.name}`;
         let destPath = join(flightsDir, destName);
 
-        // Check if an identical file already exists (same size = same flight)
         let needsCopy = true;
         if (existsSync(destPath)) {
           const existingStat = statSync(destPath);
           if (existingStat.size === file.size) {
             needsCopy = false;
           } else {
-            // Different file with same name — don't overwrite, create unique name
             destPath = uniquePath(destPath);
           }
         }
 
         if (needsCopy) {
           copyFileSync(file.path, destPath);
-          updateStep(2, { status: 'done', detail: `flights/${basename(destPath)} (${formatSize(file.size)})` });
-        } else {
-          updateStep(2, { status: 'done', detail: `Already cached (${formatSize(file.size)})` });
         }
 
-        // Check for sim data
-        setTimeout(() => {
-          activateStep(3);
-          setTimeout(() => {
-            // findSimFile is in use-flight-data, but we can check for sims/ dir
-            const simsDir = resolve(process.cwd(), '../../sims');
-            const hasSims = existsSync(simsDir);
-            updateStep(3, {
-              status: 'done',
-              detail: hasSims ? 'OpenRocket sim found in sims/' : 'No sim data (optional)',
-            });
-
-            // Parse
-            setTimeout(() => {
-              activateStep(4);
-              setPhase('parsing');
-              setTimeout(() => {
-                updateStep(4, { status: 'done', detail: `${file.name} ready` });
-                setTimeout(() => onReady(destPath), 300);
-              }, 400);
-            }, 300);
-          }, 400);
-        }, 300);
+        setCopyStatus(null);
+        onReady(destPath);
       } catch (e) {
-        updateStep(2, { status: 'error', detail: e instanceof Error ? e.message : String(e) });
-        // Fall back to reading from SD directly
-        activateStep(3);
-        updateStep(3, { status: 'done', detail: 'Skipped' });
-        activateStep(4);
-        setPhase('parsing');
+        setCopyStatus(`Copy failed: ${e instanceof Error ? e.message : String(e)} — reading from SD`);
         setTimeout(() => {
-          updateStep(4, { status: 'done', detail: 'Reading from SD card' });
-          setTimeout(() => onReady(file.path), 300);
-        }, 400);
+          setCopyStatus(null);
+          onReady(file.path);
+        }, 1500);
       }
-    }, 500);
-  }, [activateStep, updateStep, onReady]);
+    }, 100);
+  }, [onReady]);
 
   useInput((input, key) => {
     if (input === 'q' || input === 'Q') exit();
+    if (copyStatus) return; // busy copying
 
-    if (phase === 'selecting') {
-      if (key.upArrow && selected > 0) setSelected(s => s - 1);
-      if (key.downArrow && selected < files.length - 1) setSelected(s => s + 1);
-      if (key.return) {
-        loadFile(files[selected]);
-      }
+    if (key.upArrow && selected > 0) setSelected(s => s - 1);
+    if (key.downArrow && selected < files.length - 1) setSelected(s => s + 1);
+    if (key.return && files.length > 0) {
+      loadFile(files[selected]);
     }
   });
-
-  const stepIcon = (s: LoadStep) => {
-    switch (s.status) {
-      case 'done': return '\u2714';   // ✔
-      case 'error': return '\u2718';  // ✘
-      case 'active': return '\u25cb'; // ○ (spinner replaces this visually)
-      default: return '\u2500';       // ─
-    }
-  };
-
-  const stepColor = (s: LoadStep): string => {
-    switch (s.status) {
-      case 'done': return 'green';
-      case 'error': return 'red';
-      case 'active': return 'yellow';
-      default: return 'gray';
-    }
-  };
 
   return (
     <Box flexDirection="column" width={DASH_WIDTH + 2}>
       <Header title="POST-FLIGHT ANALYSIS" width={DASH_WIDTH} />
 
-      <Panel title="LOADING FLIGHT DATA" width={DASH_WIDTH} borderColor="cyan">
-        <Text>{' '}</Text>
-        {steps.map((step, i) => (
-          <React.Fragment key={i}>
-            <Text>
-              {'  '}
-              {step.status === 'active' ? (
-                <Text color="yellow"><Spinner type="dots" /></Text>
-              ) : (
-                <Text color={stepColor(step)}>{stepIcon(step)}</Text>
-              )}
-              {'  '}
-              <Text color={step.status === 'pending' ? 'gray' : 'white'} bold={step.status === 'active'}>
-                {step.label}
-              </Text>
-              {step.detail && step.status !== 'pending' && (
-                <Text dimColor>{'  — '}{step.detail}</Text>
-              )}
-            </Text>
-          </React.Fragment>
-        ))}
-        <Text>{' '}</Text>
-
-        {errorMsg && (
-          <Text color="red">  {errorMsg}</Text>
-        )}
-      </Panel>
-
-      {phase === 'selecting' && (
-        <>
+      {scanning ? (
+        <Panel title="SCANNING" width={DASH_WIDTH} borderColor="cyan">
+          <Text color="yellow">  <Spinner type="dots" /> Scanning for flight logs...</Text>
+        </Panel>
+      ) : files.length === 0 ? (
+        <Panel title="NO FLIGHT LOGS FOUND" width={DASH_WIDTH} borderColor="red">
+          <Text color="red">  No .bin files found on SD card or in flights/ directory.</Text>
+          <Text dimColor>  Insert SD card or run: pnpm dev:tui -- postflight {'<file.bin>'}</Text>
+        </Panel>
+      ) : (
+        <Panel title="SELECT FLIGHT LOG" width={DASH_WIDTH} borderColor="yellow">
+          <Text dimColor>  {files.length} flight log{files.length !== 1 ? 's' : ''} found</Text>
           <Text>{' '}</Text>
-          <Panel title="SELECT FLIGHT LOG" width={DASH_WIDTH} borderColor="yellow">
-            <Text dimColor> Use arrow keys to select, Enter to load:</Text>
-            <Text>{' '}</Text>
-            {files.map((f, i) => {
-              const date = f.mtime.toLocaleDateString() + ' ' + f.mtime.toLocaleTimeString();
-              const prefix = i === selected ? ' \u25b6 ' : '   ';
-              const displayName = f.folder ?? f.name;
-              const preflightTag = f.hasPreflight ? ' [preflight]' : '';
-              return (
-                <Text key={f.path} color={i === selected ? 'cyan' : undefined} bold={i === selected}>
-                  {prefix}{(displayName + preflightTag).padEnd(30)}{formatSize(f.size).padEnd(12)}{date.padEnd(22)}{f.volume}
-                </Text>
-              );
-            })}
-          </Panel>
-        </>
+          {files.map((f, i) => {
+            const date = f.mtime.toLocaleDateString() + ' ' + f.mtime.toLocaleTimeString();
+            const prefix = i === selected ? ' \u25b6 ' : '   ';
+            const displayName = f.folder ?? f.name;
+            const isSD = f.source.startsWith('SD:');
+            // Session grouping: indent crash reboots under their parent session
+            const indent = f.sessionGroup ? '  \u2514 ' : '';
+            const crashTag = f.isCrashReboot ? ' [crash]' : f.hasCrashTxt ? ' [has crash]' : '';
+            const preflightTag = f.hasPreflight && !f.isCrashReboot ? ' [preflight]' : '';
+            const verTag = f.logVersion ? `v${f.logVersion}` : '';
+            const fwTag = f.fwVersion ? `fw${f.fwVersion}` : '';
+            const tags = [crashTag, preflightTag].filter(Boolean).join('');
+            const verStr = [verTag, fwTag].filter(Boolean).join(' ');
+            return (
+              <Text key={`${f.path}-${i}`} color={i === selected ? 'cyan' : undefined} bold={i === selected}>
+                {prefix}{indent}{(displayName + tags).padEnd(indent ? 28 : 32)}{formatSize(f.size).padEnd(10)}{verStr.padEnd(10)}{date.padEnd(22)}
+                <Text color={isSD ? 'green' : 'gray'}>{isSD ? '\u25cf ' : '  '}{f.source}</Text>
+              </Text>
+            );
+          })}
+          <Text>{' '}</Text>
+          {copyStatus && (
+            <Text color="yellow">  <Spinner type="dots" /> {copyStatus}</Text>
+          )}
+        </Panel>
       )}
 
       <KeyBar
         keys={
-          phase === 'selecting'
+          files.length > 0 && !scanning
             ? [['\u2191\u2193', 'Select'], ['Enter', 'Load'], ['Q', 'Quit']]
             : [['Q', 'Quit']]
         }
@@ -403,14 +414,25 @@ function PostflightLoader({ onReady }: { onReady: (binPath: string) => void }) {
 
 export function Postflight({ binFile, simFile, port }: PostflightProps) {
   const [resolvedFile, setResolvedFile] = useState<string | undefined>(binFile);
+  // Key increments to force PostflightDashboard remount (resets all internal state)
+  const [dashKey, setDashKey] = useState(0);
+
+  const handleBack = useCallback(() => {
+    setResolvedFile(undefined);
+  }, []);
+
+  const handleReady = useCallback((path: string) => {
+    setDashKey(k => k + 1);
+    setResolvedFile(path);
+  }, []);
 
   // If a bin file was given directly, go straight to dashboard
   if (resolvedFile) {
-    return <PostflightDashboard binFile={resolvedFile} simFile={simFile} />;
+    return <PostflightDashboard key={dashKey} binFile={resolvedFile} simFile={simFile} onSwitchFile={handleBack} />;
   }
 
-  // Otherwise, show the auto-discovery loader
-  return <PostflightLoader onReady={(path) => setResolvedFile(path)} />;
+  // Otherwise, show the auto-discovery / file picker
+  return <PostflightFilePicker onReady={handleReady} />;
 }
 
 // ── Dashboard component ──────────────────────────────────────────
@@ -418,9 +440,10 @@ export function Postflight({ binFile, simFile, port }: PostflightProps) {
 interface DashboardProps {
   binFile: string;
   simFile?: string;
+  onSwitchFile?: () => void;
 }
 
-function PostflightDashboard({ binFile, simFile }: DashboardProps) {
+function PostflightDashboard({ binFile, simFile, onSwitchFile }: DashboardProps) {
   const { exit } = useApp();
   const { loading, error, frames, stats, sim, version, skippedBytes } = useFlightData(
     binFile,
@@ -501,6 +524,10 @@ function PostflightDashboard({ binFile, simFile }: DashboardProps) {
     if (showLogViewer) return; // log viewer handles its own input
     if (input === 'q' || input === 'Q') {
       exit();
+    }
+    if ((input === 'f' || input === 'F') && onSwitchFile) {
+      onSwitchFile();
+      return;
     }
     if ((input === 'l' || input === 'L') && frames.length) {
       setShowLogViewer(true);
@@ -597,6 +624,34 @@ function PostflightDashboard({ binFile, simFile }: DashboardProps) {
                   break;
                 }
               } catch { /* skip binary/unreadable files */ }
+            }
+          }
+
+          // Look for crash.txt
+          const crashCandidates = [
+            join(resolve(binFile, '..'), 'crash.txt'),
+            binFile.replace(/[^/]+\.bin$/i, 'crash.txt'),
+          ];
+          if (existsSync('/Volumes')) {
+            try {
+              for (const vol of readdirSync('/Volumes')) {
+                const volPath = join('/Volumes', vol);
+                const match = cleanName.match(/^.+?_(.+)$/);
+                if (match) {
+                  crashCandidates.push(join(volPath, match[1], 'crash.txt'));
+                }
+              }
+            } catch { /* skip */ }
+          }
+          for (const src of crashCandidates) {
+            if (existsSync(src)) {
+              try {
+                const content = readFileSync(src, 'utf-8');
+                if (content.includes('CRASH') || content.includes('WDT')) {
+                  writeFileSync(join(tmpFolder, 'crash.txt'), content);
+                  break;
+                }
+              } catch { /* skip */ }
             }
           }
 
@@ -767,6 +822,11 @@ function PostflightDashboard({ binFile, simFile }: DashboardProps) {
       {revealStage >= 5 && (
         <>
           {sim && <SimCompare stats={stats} sim={sim} />}
+
+          {stats.diag && (
+            <DiagnosticsPanel diag={stats.diag} frames={frames} nFrames={stats.nFrames} />
+          )}
+
           {error && <Text color="yellow">  {error}</Text>}
 
           {statusMsg && (
@@ -777,6 +837,7 @@ function PostflightDashboard({ binFile, simFile }: DashboardProps) {
 
           <KeyBar
             keys={[
+              ['F', 'Switch File'],
               ['L', 'Log Viewer'],
               ['D', 'Export to Desktop'],
               ['E', 'Export CSV'],

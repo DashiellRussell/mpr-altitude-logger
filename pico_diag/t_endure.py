@@ -16,7 +16,7 @@ def run():
     from sensors.barometer import pressure_to_altitude
     from flight.kalman import AltitudeKalman
     from flight.state_machine import FlightStateMachine
-    from logging.datalog import FRAME_FORMAT
+    from logging.datalog import FRAME_FORMAT, FRAME_SIZE
 
     sd_ok = _init_sd()
 
@@ -27,7 +27,7 @@ def run():
     k.reset(0.0)
     fsm.set_ground_reference(0.0)
 
-    pack_buf = bytearray(34)
+    pack_buf = bytearray(2 + FRAME_SIZE)
     sd_file = None
     sd_fname = '/sd/_diag_endurance.tmp'
 
@@ -78,7 +78,7 @@ def run():
 
                 if sd_file is not None:
                     struct.pack_into(FRAME_FORMAT, pack_buf, 2,
-                                     now_ms, 0, p, temp, alt_raw, alt_f, vel_f, v3, v5, v9, 0)
+                                     now_ms, 0, p, temp, alt_raw, alt_f, vel_f, v3, v5, v9, 0, 0, 0, 0, 0, 0, 0)
                     sd_file.write(pack_buf)
 
                 total_frames += 1

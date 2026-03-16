@@ -16,10 +16,15 @@ from pathlib import Path
 
 
 FRAME_HEADER = b'\xAA\x55'
-# Log format v2: 3 voltage rails instead of 1
-FRAME_FORMAT = '<IB f f f f f HHH B'
-FRAME_SIZE = struct.calcsize(FRAME_FORMAT)
 FILE_HEADER_SIZE = 10  # 6 magic + 2 version + 2 frame_size
+
+# Log format v3: diagnostics (frame_us, flush_us, free_kb, cpu_temp, i2c_errors, overruns)
+FRAME_FORMAT_V3 = '<IB f f f f f HHH B HH BB BB'
+FRAME_SIZE_V3 = struct.calcsize(FRAME_FORMAT_V3)
+
+# Log format v2: 3 voltage rails
+FRAME_FORMAT_V2 = '<IB f f f f f HHH B'
+FRAME_SIZE_V2 = struct.calcsize(FRAME_FORMAT_V2)
 
 # v1 format for backwards compatibility
 FRAME_FORMAT_V1 = '<IB f f f f f H B'
@@ -28,7 +33,15 @@ FRAME_SIZE_V1 = struct.calcsize(FRAME_FORMAT_V1)
 STATE_NAMES = {0: "PAD", 1: "BOOST", 2: "COAST", 3: "APOGEE",
                4: "DROGUE", 5: "MAIN", 6: "LANDED"}
 
-FIELD_NAMES = [
+FIELD_NAMES_V3 = [
+    "timestamp_ms", "state", "pressure_pa", "temperature_c",
+    "alt_raw_m", "alt_filtered_m", "vel_filtered_ms",
+    "v_3v3_mv", "v_5v_mv", "v_9v_mv", "flags",
+    "frame_us", "flush_us", "free_kb", "cpu_temp_c",
+    "i2c_errors", "overruns"
+]
+
+FIELD_NAMES_V2 = [
     "timestamp_ms", "state", "pressure_pa", "temperature_c",
     "alt_raw_m", "alt_filtered_m", "vel_filtered_ms",
     "v_3v3_mv", "v_5v_mv", "v_9v_mv", "flags"
@@ -65,15 +78,17 @@ def decode_file(filepath):
         offset = FILE_HEADER_SIZE
 
     # Select format based on version
-    if version >= 2:
-        fmt, fsize, fields = FRAME_FORMAT, FRAME_SIZE, FIELD_NAMES
+    if version >= 3:
+        fmt, fsize, fields = FRAME_FORMAT_V3, FRAME_SIZE_V3, FIELD_NAMES_V3
+    elif version >= 2:
+        fmt, fsize, fields = FRAME_FORMAT_V2, FRAME_SIZE_V2, FIELD_NAMES_V2
     else:
         fmt, fsize, fields = FRAME_FORMAT_V1, FRAME_SIZE_V1, FIELD_NAMES_V1
 
     frames = []
     skipped = 0
 
-    while offset < len(data) - (2 + fsize):
+    while offset + 2 + fsize <= len(data):
         # Look for sync header
         if data[offset:offset+2] != FRAME_HEADER:
             offset += 1
@@ -105,7 +120,7 @@ def to_csv(frames, output_path):
         print("No frames to write!")
         return
 
-    fields = FIELD_NAMES + ["state_name", "flags_str"]
+    fields = list(frames[0].keys())
     with open(output_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()

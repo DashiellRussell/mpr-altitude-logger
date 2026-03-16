@@ -25,6 +25,13 @@ export interface FlightFrame {
   v_5v_mv?: number;
   v_9v_mv?: number;
   flags: number;
+  /** v3 diagnostics */
+  frame_us?: number;
+  flush_us?: number;
+  free_kb?: number;
+  cpu_temp_c?: number;
+  i2c_errors?: number;
+  overruns?: number;
   /** Derived */
   state_name: string;
   flags_list: string[];
@@ -87,6 +94,20 @@ export interface FlightStats {
   v9vRange?: [number, number];
   /** Battery range (v1 only) */
   vBattRange?: [number, number];
+  /** v3 diagnostic stats */
+  diag?: DiagStats;
+}
+
+/** Diagnostic statistics from v3 frame fields */
+export interface DiagStats {
+  frameUs: { avg: number; p95: number; max: number; maxTime: number };
+  flushUs: { avg: number; max: number; maxTime: number; count: number };
+  freeKb: { start: number; end: number; min: number; trend: number };
+  cpuTemp: { avg: number; max: number; maxTime: number };
+  i2cErrors: number;
+  overruns: number;
+  /** true if last frame had data — may indicate clean shutdown vs crash */
+  cleanShutdown: boolean;
 }
 
 /** OpenRocket flight event */

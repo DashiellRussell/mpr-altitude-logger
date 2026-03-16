@@ -29,8 +29,9 @@ def run():
     t_pack = StreamStats()
     t_total = StreamStats()
 
-    pack_buf = bytearray(34)
-    fmt = '<IBfffffHHHB'
+    from logging.datalog import FRAME_FORMAT, FRAME_SIZE
+    pack_buf = bytearray(2 + FRAME_SIZE)
+    fmt = FRAME_FORMAT
     n = 1000
 
     print('  Running {} frames '.format(n), end='')
@@ -63,7 +64,7 @@ def run():
         t_power.add(time.ticks_diff(t1, t0))
 
         t0 = time.ticks_us()
-        struct.pack_into(fmt, pack_buf, 2, 0, 0, p, temp, alt_raw, alt_f, vel_f, v3, v5, v9, 0)
+        struct.pack_into(fmt, pack_buf, 2, 0, 0, p, temp, alt_raw, alt_f, vel_f, v3, v5, v9, 0, 0, 0, 0, 0, 0, 0)
         t1 = time.ticks_us()
         t_pack.add(time.ticks_diff(t1, t0))
 
@@ -195,7 +196,7 @@ def run():
 
         t0 = time.ticks_us()
         struct.pack_into(fmt, pack_buf, 2, 0, 0, pressure2, temperature2,
-                         alt_raw2, alt_f2, vel_f2, v3, v5, v9, 0)
+                         alt_raw2, alt_f2, vel_f2, v3, v5, v9, 0, 0, 0, 0, 0, 0, 0)
         t1 = time.ticks_us()
         tp_pack.add(time.ticks_diff(t1, t0))
 

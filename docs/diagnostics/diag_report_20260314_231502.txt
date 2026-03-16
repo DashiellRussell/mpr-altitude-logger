@@ -1,0 +1,33 @@
+MPR Altitude Logger — Pico Diagnostic Report
+Date: 2026-03-14 23:15:02
+Firmware: v1.6.0
+Diag: v1.1.0
+TUI: v1.1.0
+MicroPython: 3.4.0; MicroPython v1.27.0 on 2025-12-09
+CPU: 200 MHz
+RAM free: 208,720 bytes
+
+Summary: 0 passed, 1 warn, 0 failed
+============================================================
+
+────────────────────────────────────────────────────────────
+Dual-Core Stress  —  WARN  (1:00)
+────────────────────────────────────────────────────────────
+
+
+  Dual-Core Stress — Core 0+1 interference (60 sec) 
+  ──────────────────────────────────────────────────
+
+  Phase 1: Core 0 only (30 sec)...
+    837 frames
+  Phase 2: Core 0 + Timer LED (30 sec)...
+    846 frames
+
+                     Avg(us)   Max(us)   Std(us)
+  Core 0 only:         35661     44213     938.6
+  Core 0+Timer:        35278     43814    1000.2
+
+  Jitter increase: -383 us avg, -399 us max
+  [WARN] Max frame time (43814 us) exceeds budget
+  Timer LED alive: 29 / 30 seconds
+  [OK] Timer LED heartbeat stable

@@ -50,6 +50,29 @@ export const FRAME_SYNC = new Uint8Array([0xaa, 0x55]);
  * Frame layout definitions.
  * Offsets are relative to start of frame data (after sync bytes).
  */
+export const FRAME_V3 = {
+  size: 40,
+  fields: [
+    { name: 'timestamp_ms', offset: 0, type: 'u32' },
+    { name: 'state', offset: 4, type: 'u8' },
+    { name: 'pressure_pa', offset: 5, type: 'f32' },
+    { name: 'temperature_c', offset: 9, type: 'f32' },
+    { name: 'alt_raw_m', offset: 13, type: 'f32' },
+    { name: 'alt_filtered_m', offset: 17, type: 'f32' },
+    { name: 'vel_filtered_ms', offset: 21, type: 'f32' },
+    { name: 'v_3v3_mv', offset: 25, type: 'u16' },
+    { name: 'v_5v_mv', offset: 27, type: 'u16' },
+    { name: 'v_9v_mv', offset: 29, type: 'u16' },
+    { name: 'flags', offset: 31, type: 'u8' },
+    { name: 'frame_us', offset: 32, type: 'u16' },
+    { name: 'flush_us', offset: 34, type: 'u16' },
+    { name: 'free_kb', offset: 36, type: 'u8' },
+    { name: 'cpu_temp_c', offset: 37, type: 'u8' },
+    { name: 'i2c_errors', offset: 38, type: 'u8' },
+    { name: 'overruns', offset: 39, type: 'u8' },
+  ],
+} as const;
+
 export const FRAME_V2 = {
   size: 32,
   fields: [

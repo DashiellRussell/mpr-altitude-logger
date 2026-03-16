@@ -1,0 +1,63 @@
+MPR Altitude Logger — Pico Diagnostic Report
+Date: 2026-03-15 00:09:16
+Firmware: v1.9.0
+Diag: v1.3.0
+TUI: v1.3.0
+MicroPython: 3.4.0; MicroPython v1.27.0 on 2025-12-09
+CPU: 200 MHz
+RAM free: 207,312 bytes
+
+Summary: 0 passed, 1 warn, 0 failed
+============================================================
+
+────────────────────────────────────────────────────────────
+Loop Budget  —  WARN  (0:45)
+────────────────────────────────────────────────────────────
+
+
+  Loop Budget — per-stage pipeline timing (1000 frames) 
+  ──────────────────────────────────────────────────
+  Running 1000 frames .......... done
+
+  Pipeline Budget (1000 frames, 50 Hz = 20000 us):
+
+  Stage             Avg(us)   Max(us)  % Budget
+  ──────────────────────────────────────────────
+  Baro read           34283     41827    171.4%
+  Alt calc              304      8679      1.5%
+  Kalman                477      8834      2.4%
+  FSM                   170       320      0.8%
+  Power read            395       486      2.0%
+  Struct pack           108       147      0.5%
+  ──────────────────────────────────────────────
+  TOTAL               36683     45495    183.4%
+  Headroom           -16683    -25495    -83.4%
+  [WARN] Max frame time (45495 us) exceeds budget (20000 us)!
+
+
+  Pipelined Budget (250 frames, 50 Hz = 20000 us):
+  (pressure conversion runs during spin-wait between frames)
+  Running 250 frames (1+1 samples/frame) ..... done
+
+  Stage             Avg(us)   Max(us)  % Budget
+  ──────────────────────────────────────────────
+  Collect+comp         1560     10045      7.8%
+  Avg 1x OSS=0         7086     15890     35.4%
+  Alt calc              315       435      1.6%
+  Kalman                450       475      2.3%
+  FSM                   166       188      0.8%
+  Power read            392       465      2.0%
+  Struct pack           113       152      0.6%
+  ──────────────────────────────────────────────
+  TOTAL               12020     20676     60.1%
+  Headroom             7980      -676     39.9%
+
+  Temp re-read: 5723 us avg, 6397 us max (5 reads in 250 frames)
+
+  ── Blocking vs Pipelined ──
+                     Blocking   Pipelined
+  Avg frame            36683us      12020us
+  Max frame            45495us      20676us
+  Budget used          183.4%        60.1%
+  Speedup: 3.1x
+  [WARN] Pipelined max (20676 us) exceeds budget (20000 us)

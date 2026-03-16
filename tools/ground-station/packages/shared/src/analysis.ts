@@ -1,4 +1,4 @@
-import type { FlightFrame, FlightStats, StateTransition, SimRow, SimSummary } from './types.js';
+import type { FlightFrame, FlightStats, DiagStats, StateTransition, SimRow, SimSummary } from './types.js';
 import { FLAG_ARMED, FLAG_DROGUE_FIRED, FLAG_MAIN_FIRED, FLAG_ERROR, STATE_NAMES } from './constants.js';
 
 /**
@@ -118,6 +118,73 @@ export function analyzeFlight(frames: FlightFrame[], version: number): FlightSta
     wasArmed, hadError,
     version,
   };
+
+  // v3 diagnostic stats
+  if (version >= 3 && frames[0].frame_us !== undefined) {
+    const frameUsVals = frames.map(f => f.frame_us ?? 0);
+    const flushFrames = frames.filter(f => (f.flush_us ?? 0) > 0);
+    const freeKbVals = frames.map(f => f.free_kb ?? 0);
+    const cpuTempVals = frames.map(f => (f.cpu_temp_c ?? 40) - 40); // offset decode
+
+    // frame_us percentile
+    const sorted = [...frameUsVals].sort((a, b) => a - b);
+    const p95Idx = Math.floor(sorted.length * 0.95);
+    let maxFrameUs = 0, maxFrameUsIdx = 0;
+    for (let i = 0; i < frameUsVals.length; i++) {
+      if (frameUsVals[i] > maxFrameUs) { maxFrameUs = frameUsVals[i]; maxFrameUsIdx = i; }
+    }
+
+    // flush_us stats
+    let maxFlushUs = 0, maxFlushUsIdx = 0, flushSum = 0;
+    for (const f of flushFrames) {
+      const v = f.flush_us ?? 0;
+      flushSum += v;
+      if (v > maxFlushUs) { maxFlushUs = v; maxFlushUsIdx = frames.indexOf(f); }
+    }
+
+    // cpu temp
+    let maxTemp = -Infinity, maxTempIdx = 0;
+    let tempSum = 0;
+    for (let i = 0; i < cpuTempVals.length; i++) {
+      tempSum += cpuTempVals[i];
+      if (cpuTempVals[i] > maxTemp) { maxTemp = cpuTempVals[i]; maxTempIdx = i; }
+    }
+
+    // Last frame diagnostics — crash detection heuristic:
+    // If the last frame count is an exact multiple of flush_every (50), likely WDT crash
+    const lastFrame = frames[frames.length - 1];
+    const landed = lastFrame.state === 6; // LANDED state
+    const cleanShutdown = landed;
+
+    stats.diag = {
+      frameUs: {
+        avg: Math.round(frameUsVals.reduce((a, b) => a + b, 0) / frameUsVals.length),
+        p95: sorted[p95Idx],
+        max: maxFrameUs,
+        maxTime: times[maxFrameUsIdx],
+      },
+      flushUs: {
+        avg: flushFrames.length > 0 ? Math.round(flushSum / flushFrames.length) : 0,
+        max: maxFlushUs,
+        maxTime: maxFlushUsIdx < times.length ? times[maxFlushUsIdx] : 0,
+        count: flushFrames.length,
+      },
+      freeKb: {
+        start: freeKbVals[0],
+        end: freeKbVals[freeKbVals.length - 1],
+        min: Math.min(...freeKbVals),
+        trend: freeKbVals[freeKbVals.length - 1] - freeKbVals[0],
+      },
+      cpuTemp: {
+        avg: Math.round(tempSum / cpuTempVals.length),
+        max: maxTemp,
+        maxTime: times[maxTempIdx],
+      },
+      i2cErrors: lastFrame.i2c_errors ?? 0,
+      overruns: lastFrame.overruns ?? 0,
+      cleanShutdown,
+    };
+  }
 
   if (version >= 2) {
     const v3vals = frames.map((f) => f.v_3v3_mv ?? 0);
