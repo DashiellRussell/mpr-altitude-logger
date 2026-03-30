@@ -2,11 +2,18 @@
   "name": "mpr-altitude-logger",
   "private": true,
   "scripts": {
+    "commands": "node -e \"const h=require('./scripts/help.cjs'); h()\"",
     "dev:tui": "python3 tools/launch.py",
+    "dev:web": "cd tools/ground-station && pnpm dev:web",
     "simulator": "python3 tools/simulator_tui.py",
+    "preflight": "python3 tools/preflight.py",
+    "postflight": "python3 tools/postflight.py",
+    "decode": "python3 tools/decode_log.py",
     "test": "cd /tmp && python3 -m pytest tests/ -v",
     "test:integration": "cd /tmp && python3 -m pytest tests/test_integration.py -v",
     "pico": "python3 tools/pico_diag_tui.py",
-    "pico:diag": "python3 tools/pico_diag_tui.py"
+    "pico:diag": "python3 tools/pico_diag_tui.py",
+    "deploy:pico": "cd tools/ground-station && pnpm deploy:pico",
+    "version": "node -e \"const c=require('fs').readFileSync('config.py','utf8'); const v=c.match(/VERSION\\s*=\\s*\\\"(.+?)\\\"/); console.log('Firmware version: '+(v?v[1]:'unknown'))\""
   }
 }
