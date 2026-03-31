@@ -30,6 +30,7 @@ module.exports = function help() {
 
 \x1b[1;32m Analysis\x1b[0m                                        \x1b[2mrun from: project root\x1b[0m
   pnpm decode -- <file>  Decode binary .bin log to CSV
+  pnpm restate           Restate TUI (auto-detect SD, select flight)
   pnpm postflight        Full post-flight pipeline
 
 \x1b[1;32m Testing\x1b[0m                                         \x1b[2mrun from: project root\x1b[0m

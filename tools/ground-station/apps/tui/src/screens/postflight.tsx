@@ -369,28 +369,49 @@ function PostflightFilePicker({ onReady }: { onReady: (binPath: string) => void 
         </Panel>
       ) : (
         <Panel title="SELECT FLIGHT LOG" width={DASH_WIDTH} borderColor="yellow">
-          <Text dimColor>  {files.length} flight log{files.length !== 1 ? 's' : ''} found</Text>
+          <Text dimColor>  {files.length} flight log{files.length !== 1 ? 's' : ''} found{files.length > 20 ? ` (showing ${Math.min(20, files.length)})` : ''}</Text>
           <Text>{' '}</Text>
-          {files.map((f, i) => {
-            const date = f.mtime.toLocaleDateString() + ' ' + f.mtime.toLocaleTimeString();
-            const prefix = i === selected ? ' \u25b6 ' : '   ';
-            const displayName = f.folder ?? f.name;
-            const isSD = f.source.startsWith('SD:');
-            // Session grouping: indent crash reboots under their parent session
-            const indent = f.sessionGroup ? '  \u2514 ' : '';
-            const crashTag = f.isCrashReboot ? ' [crash]' : f.hasCrashTxt ? ' [has crash]' : '';
-            const preflightTag = f.hasPreflight && !f.isCrashReboot ? ' [preflight]' : '';
-            const verTag = f.logVersion ? `v${f.logVersion}` : '';
-            const fwTag = f.fwVersion ? `fw${f.fwVersion}` : '';
-            const tags = [crashTag, preflightTag].filter(Boolean).join('');
-            const verStr = [verTag, fwTag].filter(Boolean).join(' ');
-            return (
-              <Text key={`${f.path}-${i}`} color={i === selected ? 'cyan' : undefined} bold={i === selected}>
-                {prefix}{indent}{(displayName + tags).padEnd(indent ? 28 : 32)}{formatSize(f.size).padEnd(10)}{verStr.padEnd(10)}{date.padEnd(22)}
-                <Text color={isSD ? 'green' : 'gray'}>{isSD ? '\u25cf ' : '  '}{f.source}</Text>
-              </Text>
-            );
-          })}
+          {(() => {
+            // Windowed rendering — show max 20 items to avoid Ink stack overflow
+            const MAX_VISIBLE = 20;
+            const half = Math.floor(MAX_VISIBLE / 2);
+            let start = Math.max(0, selected - half);
+            let end = start + MAX_VISIBLE;
+            if (end > files.length) {
+              end = files.length;
+              start = Math.max(0, end - MAX_VISIBLE);
+            }
+            const visible = files.slice(start, end);
+            const rows: React.ReactNode[] = [];
+            if (start > 0) {
+              rows.push(<Text key="scroll-up" dimColor>   \u2191 {start} more above</Text>);
+            }
+            for (let vi = 0; vi < visible.length; vi++) {
+              const i = start + vi;
+              const f = visible[vi];
+              const date = f.mtime.toLocaleDateString() + ' ' + f.mtime.toLocaleTimeString();
+              const prefix = i === selected ? ' \u25b6 ' : '   ';
+              const displayName = f.folder ?? f.name;
+              const isSD = f.source.startsWith('SD:');
+              const indent = f.sessionGroup ? '  \u2514 ' : '';
+              const crashTag = f.isCrashReboot ? ' [crash]' : f.hasCrashTxt ? ' [has crash]' : '';
+              const preflightTag = f.hasPreflight && !f.isCrashReboot ? ' [preflight]' : '';
+              const verTag = f.logVersion ? `v${f.logVersion}` : '';
+              const fwTag = f.fwVersion ? `fw${f.fwVersion}` : '';
+              const tags = [crashTag, preflightTag].filter(Boolean).join('');
+              const verStr = [verTag, fwTag].filter(Boolean).join(' ');
+              rows.push(
+                <Text key={`${f.path}-${i}`} color={i === selected ? 'cyan' : undefined} bold={i === selected}>
+                  {prefix}{indent}{(displayName + tags).padEnd(indent ? 28 : 32)}{formatSize(f.size).padEnd(10)}{verStr.padEnd(10)}{date.padEnd(22)}
+                  <Text color={isSD ? 'green' : 'gray'}>{isSD ? '\u25cf ' : '  '}{f.source}</Text>
+                </Text>
+              );
+            }
+            if (end < files.length) {
+              rows.push(<Text key="scroll-down" dimColor>   \u2193 {files.length - end} more below</Text>);
+            }
+            return rows;
+          })()}
           <Text>{' '}</Text>
           {copyStatus && (
             <Text color="yellow">  <Spinner type="dots" /> {copyStatus}</Text>
@@ -445,7 +466,7 @@ interface DashboardProps {
 
 function PostflightDashboard({ binFile, simFile, onSwitchFile }: DashboardProps) {
   const { exit } = useApp();
-  const { loading, error, frames, stats, sim, version, skippedBytes } = useFlightData(
+  const { loading, error, frames, allFramesRef, stats, sim, version, skippedBytes } = useFlightData(
     binFile,
     simFile
   );
@@ -501,16 +522,17 @@ function PostflightDashboard({ binFile, simFile, onSwitchFile }: DashboardProps)
   useEffect(() => {
     if (!frames.length || !stats || csvWritten.current) return;
     csvWritten.current = true;
+    const allFrames = allFramesRef.current;
     const generated: string[] = [];
     try {
       const csvPath = binFile.replace(/\.bin$/i, '.csv');
       if (csvPath !== binFile && !existsSync(csvPath)) {
-        writeFileSync(csvPath, framesToCsv(frames, version));
+        writeFileSync(csvPath, framesToCsv(allFrames, version));
         generated.push(basename(csvPath));
       }
       const reportPath = binFile.replace(/\.bin$/i, '_report.txt');
       if (reportPath !== binFile && !existsSync(reportPath)) {
-        writeFileSync(reportPath, generateFlightReport(frames, stats, version, basename(binFile), sim));
+        writeFileSync(reportPath, generateFlightReport(allFrames, stats, version, basename(binFile), sim));
         generated.push(basename(reportPath));
       }
       if (generated.length) {
@@ -539,9 +561,9 @@ function PostflightDashboard({ binFile, simFile, onSwitchFile }: DashboardProps)
       // Brief delay for visual feedback
       setTimeout(() => {
         try {
-          const csv = framesToCsv(frames, version);
+          const csv = framesToCsv(allFramesRef.current, version);
           writeFileSync(csvPath, csv);
-          setStatusMsg(`\u2714 Exported ${frames.length} frames to ${basename(csvPath)}`);
+          setStatusMsg(`\u2714 Exported ${allFramesRef.current.length} frames to ${basename(csvPath)}`);
         } catch (e) {
           setStatusMsg(`\u2718 Export error: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -562,9 +584,9 @@ function PostflightDashboard({ binFile, simFile, onSwitchFile }: DashboardProps)
           mkdirSync(tmpFolder, { recursive: true });
 
           copyFileSync(binFile, join(tmpFolder, `${flightName}.bin`));
-          writeFileSync(join(tmpFolder, `${flightName}.csv`), framesToCsv(frames, version));
+          writeFileSync(join(tmpFolder, `${flightName}.csv`), framesToCsv(allFramesRef.current, version));
           writeFileSync(join(tmpFolder, `${flightName}_report.txt`),
-            generateFlightReport(frames, stats, version, basename(binFile), sim));
+            generateFlightReport(allFramesRef.current, stats, version, basename(binFile), sim));
 
           // Look for preflight.txt — could be alongside local copy or on the SD card
           // Strip " (N)" dedup suffix from basename for SD card folder matching
@@ -674,7 +696,7 @@ function PostflightDashboard({ binFile, simFile, onSwitchFile }: DashboardProps)
       setStatusMsg('Saving report...');
       setTimeout(() => {
         try {
-          const report = generateFlightReport(frames, stats, version, basename(binFile), sim);
+          const report = generateFlightReport(allFramesRef.current, stats, version, basename(binFile), sim);
           writeFileSync(reportPath, report);
           setStatusMsg(`\u2714 Saved report to ${basename(reportPath)}`);
         } catch (e) {

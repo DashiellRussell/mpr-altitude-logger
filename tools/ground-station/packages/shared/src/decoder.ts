@@ -85,7 +85,12 @@ function decodeFrame(
  *
  * Matches the Python decode_log.py / postflight.py decoder behavior.
  */
-export function decodeBinFile(buffer: Uint8Array): DecodedFlight {
+export function decodeBinFile(inputBuffer: Uint8Array): DecodedFlight {
+  // Ensure we have a clean ArrayBuffer (Node Buffers share a pool, so buffer.buffer
+  // may be much larger than the actual data — DataView offsets would be wrong)
+  const buffer = inputBuffer.buffer.byteLength !== inputBuffer.byteLength
+    ? new Uint8Array(inputBuffer.slice(0).buffer)
+    : inputBuffer;
   const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
   let version = 2;
@@ -159,5 +164,5 @@ export function framesToCsv(frames: FlightFrame[], version: number): string {
     return [...vals, ...vVals, f.flags, ...diagVals, f.state_name, flagsStr].join(',');
   });
 
-  return [header, ...rows].join('\n');
+  return header + '\n' + rows.join('\n');
 }

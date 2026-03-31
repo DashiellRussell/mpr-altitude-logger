@@ -41,11 +41,12 @@ export function AltitudeChart({
   const altitudes = frames.map((f) => f.alt_filtered_m);
   const states = frames.map((f) => STATE_NAMES[f.state] ?? 'PAD');
 
-  let minAlt = Math.min(...altitudes);
-  let maxAlt = Math.max(...altitudes);
+  // Use reduce instead of Math.min/max(...arr) to avoid stack overflow on large arrays
+  let minAlt = altitudes.reduce((a, b) => a < b ? a : b, altitudes[0]);
+  let maxAlt = altitudes.reduce((a, b) => a > b ? a : b, altitudes[0]);
   if (sim && sim.altitudes.length) {
-    maxAlt = Math.max(maxAlt, Math.max(...sim.altitudes));
-    minAlt = Math.min(minAlt, Math.min(...sim.altitudes));
+    maxAlt = Math.max(maxAlt, sim.altitudes.reduce((a, b) => a > b ? a : b, sim.altitudes[0]));
+    minAlt = Math.min(minAlt, sim.altitudes.reduce((a, b) => a < b ? a : b, sim.altitudes[0]));
   }
   // Ensure some visible range even for ground-only data
   const range = maxAlt - minAlt;
@@ -57,7 +58,7 @@ export function AltitudeChart({
   maxAlt += padding;
   minAlt -= padding;
 
-  const maxT = Math.max(...times);
+  const maxT = times[times.length - 1];
   if (maxT <= 0) {
     return <Text dimColor>(no time data)</Text>;
   }
@@ -70,15 +71,13 @@ export function AltitudeChart({
   for (let col = 0; col < width; col++) {
     const t = (col / width) * maxT;
 
-    let bestIdx = 0;
-    let bestDist = Infinity;
-    for (let i = 0; i < times.length; i++) {
-      const d = Math.abs(times[i] - t);
-      if (d < bestDist) {
-        bestDist = d;
-        bestIdx = i;
-      }
+    // Binary search for nearest frame (times is sorted)
+    let lo = 0, hi = times.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (times[mid] < t) lo = mid + 1; else hi = mid;
     }
+    const bestIdx = lo > 0 && Math.abs(times[lo - 1] - t) < Math.abs(times[lo] - t) ? lo - 1 : lo;
     colFrameIdx.push(bestIdx);
 
     if (sim && sim.times.length) {

@@ -13,6 +13,7 @@ Usage:
 
 Dependencies: rich, pyserial (for download only)
 """
+from __future__ import annotations
 
 import struct
 import sys

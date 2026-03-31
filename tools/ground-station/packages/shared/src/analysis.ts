@@ -1,4 +1,4 @@
-import type { FlightFrame, FlightStats, DiagStats, StateTransition, SimRow, SimSummary } from './types.js';
+import type { FlightFrame, FlightStats, StateTransition, SimRow, SimSummary } from './types.js';
 import { FLAG_ARMED, FLAG_DROGUE_FIRED, FLAG_MAIN_FIRED, FLAG_ERROR, STATE_NAMES } from './constants.js';
 
 /**
@@ -23,94 +23,76 @@ export function analyzeFlight(frames: FlightFrame[], version: number): FlightSta
   }
 
   const t0 = frames[0].timestamp_ms;
-  const times = frames.map((f) => (f.timestamp_ms - t0) / 1000);
-  const altitudes = frames.map((f) => f.alt_filtered_m);
-  const velocities = frames.map((f) => f.vel_filtered_ms);
+  const n = frames.length;
 
-  // Max altitude
-  let maxAlt = -Infinity;
-  let maxAltIdx = 0;
-  for (let i = 0; i < altitudes.length; i++) {
-    if (altitudes[i] > maxAlt) {
-      maxAlt = altitudes[i];
-      maxAltIdx = i;
-    }
-  }
+  // Single-pass: compute maxima, transitions, deployment events, and flags
+  // Avoids creating large intermediate arrays that can blow the stack on 100K+ frame logs
+  let maxAlt = -Infinity, maxAltIdx = 0;
+  let maxVel = -Infinity, maxVelIdx = 0;
+  let maxAccel = 0, maxAccelTime = 0;
+  let wasArmed = false, hadError = false;
+  let drogueFired = false, drogueTime: number | null = null;
+  let mainFired = false, mainTime: number | null = null;
+  let landingVelSum = 0;
+  const transitions: StateTransition[] = [];
+  let prevVel = frames[0].vel_filtered_ms;
+  let prevTime = 0;
 
-  // Max velocity
-  let maxVel = -Infinity;
-  let maxVelIdx = 0;
-  for (let i = 0; i < velocities.length; i++) {
-    if (velocities[i] > maxVel) {
-      maxVel = velocities[i];
-      maxVelIdx = i;
-    }
-  }
+  for (let i = 0; i < n; i++) {
+    const f = frames[i];
+    const t = (f.timestamp_ms - t0) / 1000;
+    const alt = f.alt_filtered_m;
+    const vel = f.vel_filtered_ms;
 
-  // Max acceleration (estimated from velocity derivative)
-  let maxAccel = 0;
-  let maxAccelTime = 0;
-  for (let i = 1; i < velocities.length; i++) {
-    const dt = times[i] - times[i - 1];
-    if (dt > 0) {
-      const accel = (velocities[i] - velocities[i - 1]) / dt;
-      if (accel > maxAccel) {
-        maxAccel = accel;
-        maxAccelTime = times[i];
+    if (alt > maxAlt) { maxAlt = alt; maxAltIdx = i; }
+    if (vel > maxVel) { maxVel = vel; maxVelIdx = i; }
+
+    // Acceleration from velocity derivative
+    if (i > 0) {
+      const dt = t - prevTime;
+      if (dt > 0) {
+        const accel = (vel - prevVel) / dt;
+        if (accel > maxAccel) { maxAccel = accel; maxAccelTime = t; }
       }
     }
-  }
 
-  const duration = times[times.length - 1];
-  const sampleRate = duration > 0 ? frames.length / duration : 0;
-
-  // Landing velocity (average of last 10 frames)
-  const nLand = Math.min(10, velocities.length);
-  let landingVelSum = 0;
-  for (let i = velocities.length - nLand; i < velocities.length; i++) {
-    landingVelSum += velocities[i];
-  }
-  const landingVel = landingVelSum / nLand;
-
-  // State transitions
-  const transitions: StateTransition[] = [];
-  for (let i = 1; i < frames.length; i++) {
-    if (frames[i].state !== frames[i - 1].state) {
+    // State transitions
+    if (i > 0 && f.state !== frames[i - 1].state) {
       transitions.push({
-        time: times[i],
+        time: t,
         from_state: STATE_NAMES[frames[i - 1].state] ?? '?',
-        to_state: STATE_NAMES[frames[i].state] ?? '?',
+        to_state: STATE_NAMES[f.state] ?? '?',
       });
     }
+
+    // Deployment events
+    if (!drogueFired && (f.flags & FLAG_DROGUE_FIRED)) { drogueFired = true; drogueTime = t; }
+    if (!mainFired && (f.flags & FLAG_MAIN_FIRED)) { mainFired = true; mainTime = t; }
+
+    // Flags
+    if (f.flags & FLAG_ARMED) wasArmed = true;
+    if (f.flags & FLAG_ERROR) hadError = true;
+
+    // Landing velocity: accumulate last 10 frames
+    if (i >= n - Math.min(10, n)) { landingVelSum += vel; }
+
+    prevVel = vel;
+    prevTime = t;
   }
 
-  // Deployment events
-  let drogueFired = false;
-  let drogueTime: number | null = null;
-  let mainFired = false;
-  let mainTime: number | null = null;
+  const duration = (frames[n - 1].timestamp_ms - t0) / 1000;
+  const sampleRate = duration > 0 ? n / duration : 0;
+  const nLand = Math.min(10, n);
+  const landingVel = landingVelSum / nLand;
 
-  for (let i = 0; i < frames.length; i++) {
-    if (!drogueFired && (frames[i].flags & FLAG_DROGUE_FIRED)) {
-      drogueFired = true;
-      drogueTime = times[i];
-    }
-    if (!mainFired && (frames[i].flags & FLAG_MAIN_FIRED)) {
-      mainFired = true;
-      mainTime = times[i];
-    }
-  }
+  // Helper: frame index → time in seconds
+  const timeAt = (i: number) => (frames[i].timestamp_ms - t0) / 1000;
 
-  // ARM and error status
-  const wasArmed = frames.some((f) => f.flags & FLAG_ARMED);
-  const hadError = frames.some((f) => f.flags & FLAG_ERROR);
-
-  // Power rail ranges
   const stats: FlightStats = {
-    maxAlt, maxAltTime: times[maxAltIdx],
-    maxVel, maxVelTime: times[maxVelIdx],
+    maxAlt, maxAltTime: timeAt(maxAltIdx),
+    maxVel, maxVelTime: timeAt(maxVelIdx),
     maxAccel, maxAccelTime,
-    duration, sampleRate, nFrames: frames.length,
+    duration, sampleRate, nFrames: n,
     landingVel,
     transitions,
     drogueFired, drogueTime,
@@ -119,66 +101,67 @@ export function analyzeFlight(frames: FlightFrame[], version: number): FlightSta
     version,
   };
 
-  // v3 diagnostic stats
+  // v3 diagnostic stats — single-pass to avoid large intermediate arrays
   if (version >= 3 && frames[0].frame_us !== undefined) {
-    const frameUsVals = frames.map(f => f.frame_us ?? 0);
-    const flushFrames = frames.filter(f => (f.flush_us ?? 0) > 0);
-    const freeKbVals = frames.map(f => f.free_kb ?? 0);
-    const cpuTempVals = frames.map(f => (f.cpu_temp_c ?? 40) - 40); // offset decode
+    let frameUsSum = 0, maxFrameUs = 0, maxFrameUsIdx = 0;
+    let flushCount = 0, flushSum = 0, maxFlushUs = 0, maxFlushUsIdx = 0;
+    let freeKbStart = frames[0].free_kb ?? 0, freeKbEnd = 0, freeKbMin = Infinity;
+    let maxTemp = -Infinity, maxTempIdx = 0, tempSum = 0;
+    const frameUsVals: number[] = new Array(n); // needed for percentile sort
 
-    // frame_us percentile
-    const sorted = [...frameUsVals].sort((a, b) => a - b);
-    const p95Idx = Math.floor(sorted.length * 0.95);
-    let maxFrameUs = 0, maxFrameUsIdx = 0;
-    for (let i = 0; i < frameUsVals.length; i++) {
-      if (frameUsVals[i] > maxFrameUs) { maxFrameUs = frameUsVals[i]; maxFrameUsIdx = i; }
+    for (let i = 0; i < n; i++) {
+      const f = frames[i];
+      const fus = f.frame_us ?? 0;
+      frameUsVals[i] = fus;
+      frameUsSum += fus;
+      if (fus > maxFrameUs) { maxFrameUs = fus; maxFrameUsIdx = i; }
+
+      const flus = f.flush_us ?? 0;
+      if (flus > 0) {
+        flushCount++;
+        flushSum += flus;
+        if (flus > maxFlushUs) { maxFlushUs = flus; maxFlushUsIdx = i; }
+      }
+
+      const fkb = f.free_kb ?? 0;
+      if (i === n - 1) freeKbEnd = fkb;
+      if (fkb < freeKbMin) freeKbMin = fkb;
+
+      const ct = (f.cpu_temp_c ?? 40) - 40;
+      tempSum += ct;
+      if (ct > maxTemp) { maxTemp = ct; maxTempIdx = i; }
     }
 
-    // flush_us stats
-    let maxFlushUs = 0, maxFlushUsIdx = 0, flushSum = 0;
-    for (const f of flushFrames) {
-      const v = f.flush_us ?? 0;
-      flushSum += v;
-      if (v > maxFlushUs) { maxFlushUs = v; maxFlushUsIdx = frames.indexOf(f); }
-    }
+    // frame_us percentile (sort is fine on a typed array)
+    frameUsVals.sort((a, b) => a - b);
+    const p95Idx = Math.floor(n * 0.95);
 
-    // cpu temp
-    let maxTemp = -Infinity, maxTempIdx = 0;
-    let tempSum = 0;
-    for (let i = 0; i < cpuTempVals.length; i++) {
-      tempSum += cpuTempVals[i];
-      if (cpuTempVals[i] > maxTemp) { maxTemp = cpuTempVals[i]; maxTempIdx = i; }
-    }
-
-    // Last frame diagnostics — crash detection heuristic:
-    // If the last frame count is an exact multiple of flush_every (50), likely WDT crash
-    const lastFrame = frames[frames.length - 1];
-    const landed = lastFrame.state === 6; // LANDED state
-    const cleanShutdown = landed;
+    const lastFrame = frames[n - 1];
+    const cleanShutdown = lastFrame.state === 6; // LANDED state
 
     stats.diag = {
       frameUs: {
-        avg: Math.round(frameUsVals.reduce((a, b) => a + b, 0) / frameUsVals.length),
-        p95: sorted[p95Idx],
+        avg: Math.round(frameUsSum / n),
+        p95: frameUsVals[p95Idx],
         max: maxFrameUs,
-        maxTime: times[maxFrameUsIdx],
+        maxTime: timeAt(maxFrameUsIdx),
       },
       flushUs: {
-        avg: flushFrames.length > 0 ? Math.round(flushSum / flushFrames.length) : 0,
+        avg: flushCount > 0 ? Math.round(flushSum / flushCount) : 0,
         max: maxFlushUs,
-        maxTime: maxFlushUsIdx < times.length ? times[maxFlushUsIdx] : 0,
-        count: flushFrames.length,
+        maxTime: timeAt(maxFlushUsIdx),
+        count: flushCount,
       },
       freeKb: {
-        start: freeKbVals[0],
-        end: freeKbVals[freeKbVals.length - 1],
-        min: Math.min(...freeKbVals),
-        trend: freeKbVals[freeKbVals.length - 1] - freeKbVals[0],
+        start: freeKbStart,
+        end: freeKbEnd,
+        min: freeKbMin === Infinity ? 0 : freeKbMin,
+        trend: freeKbEnd - freeKbStart,
       },
       cpuTemp: {
-        avg: Math.round(tempSum / cpuTempVals.length),
+        avg: Math.round(tempSum / n),
         max: maxTemp,
-        maxTime: times[maxTempIdx],
+        maxTime: timeAt(maxTempIdx),
       },
       i2cErrors: lastFrame.i2c_errors ?? 0,
       overruns: lastFrame.overruns ?? 0,
@@ -186,16 +169,28 @@ export function analyzeFlight(frames: FlightFrame[], version: number): FlightSta
     };
   }
 
+  // Power rail ranges — single pass, no intermediate arrays
   if (version >= 2) {
-    const v3vals = frames.map((f) => f.v_3v3_mv ?? 0);
-    const v5vals = frames.map((f) => f.v_5v_mv ?? 0);
-    const v9vals = frames.map((f) => f.v_9v_mv ?? 0);
-    stats.v3v3Range = [Math.min(...v3vals), Math.max(...v3vals)];
-    stats.v5vRange = [Math.min(...v5vals), Math.max(...v5vals)];
-    stats.v9vRange = [Math.min(...v9vals), Math.max(...v9vals)];
+    let v3lo = Infinity, v3hi = -Infinity;
+    let v5lo = Infinity, v5hi = -Infinity;
+    let v9lo = Infinity, v9hi = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const f = frames[i];
+      const v3 = f.v_3v3_mv ?? 0, v5 = f.v_5v_mv ?? 0, v9 = f.v_9v_mv ?? 0;
+      if (v3 < v3lo) v3lo = v3; if (v3 > v3hi) v3hi = v3;
+      if (v5 < v5lo) v5lo = v5; if (v5 > v5hi) v5hi = v5;
+      if (v9 < v9lo) v9lo = v9; if (v9 > v9hi) v9hi = v9;
+    }
+    stats.v3v3Range = [v3lo, v3hi];
+    stats.v5vRange = [v5lo, v5hi];
+    stats.v9vRange = [v9lo, v9hi];
   } else {
-    const vBatt = frames.map((f) => f.v_batt_mv ?? 0);
-    stats.vBattRange = [Math.min(...vBatt), Math.max(...vBatt)];
+    let blo = Infinity, bhi = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const v = frames[i].v_batt_mv ?? 0;
+      if (v < blo) blo = v; if (v > bhi) bhi = v;
+    }
+    stats.vBattRange = [blo, bhi];
   }
 
   return stats;
@@ -225,7 +220,7 @@ export function summarizeSim(rows: SimRow[]): SimSummary {
   return {
     maxAlt,
     maxAltTime: times[maxAltIdx],
-    maxVel: Math.max(...velocities),
+    maxVel: velocities.reduce((a, b) => a > b ? a : b, velocities[0]),
     duration: times[times.length - 1],
     times,
     altitudes,

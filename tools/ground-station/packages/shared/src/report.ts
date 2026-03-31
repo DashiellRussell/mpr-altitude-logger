@@ -71,8 +71,8 @@ function altitudeChart(frames: FlightFrame[], stats: FlightStats): string[] {
   const times = frames.map(f => (f.timestamp_ms - t0) / 1000);
   const alts = frames.map(f => f.alt_filtered_m);
 
-  let minAlt = Math.min(...alts);
-  let maxAlt = Math.max(...alts);
+  let minAlt = alts.reduce((a, b) => a < b ? a : b, alts[0]);
+  let maxAlt = alts.reduce((a, b) => a > b ? a : b, alts[0]);
   if (maxAlt - minAlt < 1) maxAlt = minAlt + 1;
   const padding = (maxAlt - minAlt) * 0.05;
   maxAlt += padding;
@@ -101,13 +101,13 @@ function altitudeChart(frames: FlightFrame[], stats: FlightStats): string[] {
 
     for (let col = 0; col < CHART_W; col++) {
       const t = (col / CHART_W) * maxT;
-      // Find nearest frame
-      let bestIdx = 0;
-      let bestDist = Infinity;
-      for (let i = 0; i < times.length; i++) {
-        const d = Math.abs(times[i] - t);
-        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      // Binary search for nearest frame (times is sorted)
+      let lo = 0, hi = times.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (times[mid] < t) lo = mid + 1; else hi = mid;
       }
+      const bestIdx = lo > 0 && Math.abs(times[lo - 1] - t) < Math.abs(times[lo] - t) ? lo - 1 : lo;
       const alt = alts[bestIdx];
       const stateName = STATE_NAMES[frames[bestIdx].state] ?? 'PAD';
 
@@ -195,7 +195,15 @@ function frameTable(frames: FlightFrame[], version: number): string[] {
   lines.push(hdr);
   lines.push('  ' + '─'.repeat(hdr.length - 2));
 
-  for (let i = 0; i < frames.length; i++) {
+  // For large logs, subsample to avoid generating enormous reports
+  const MAX_ROWS = 5000;
+  const step = frames.length > MAX_ROWS ? Math.ceil(frames.length / MAX_ROWS) : 1;
+  if (step > 1) {
+    lines.push(`  (${frames.length.toLocaleString()} frames — showing every ${step}th frame)`);
+    lines.push('');
+  }
+
+  for (let i = 0; i < frames.length; i += step) {
     const f = frames[i];
     const t = ((f.timestamp_ms - t0) / 1000).toFixed(2);
     const stateName = STATE_NAMES[f.state] ?? '?';

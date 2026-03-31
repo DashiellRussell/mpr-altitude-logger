@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { readFileSync, readdirSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
 import {
@@ -11,10 +11,16 @@ import {
 } from '@mpr/shared';
 import type { FlightFrame, FlightStats, SimSummary } from '@mpr/shared';
 
+/** Max frames to pass through React state for display. Full set kept in ref for export. */
+const MAX_DISPLAY_FRAMES = 10000;
+
 interface FlightDataResult {
   loading: boolean;
   error: string | null;
+  /** Subsampled frames for display (max MAX_DISPLAY_FRAMES). Use allFramesRef for export. */
   frames: FlightFrame[];
+  /** Ref to the full unsampled frame array — use for CSV export, reports, etc. */
+  allFramesRef: React.MutableRefObject<FlightFrame[]>;
   stats: FlightStats | null;
   sim: SimSummary | null;
   version: number;
@@ -61,6 +67,7 @@ export function useFlightData(binFile?: string, simFile?: string): FlightDataRes
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [frames, setFrames] = useState<FlightFrame[]>([]);
+  const allFramesRef = useRef<FlightFrame[]>([]);
   const [stats, setStats] = useState<FlightStats | null>(null);
   const [sim, setSim] = useState<SimSummary | null>(null);
   const [version, setVersion] = useState(2);
@@ -73,6 +80,9 @@ export function useFlightData(binFile?: string, simFile?: string): FlightDataRes
       return;
     }
 
+    // Defer heavy work to next tick so React can render the loading state first
+    // and avoid blocking the event loop / exceeding stack size during reconciliation
+    const timer = setTimeout(() => {
     try {
       // Read and decode binary log
       const buffer = readFileSync(binFile);
@@ -84,11 +94,28 @@ export function useFlightData(binFile?: string, simFile?: string): FlightDataRes
         return;
       }
 
-      setFrames(decoded.frames);
+      // Store full frame array in ref (not React state) to avoid re-render overhead
+      allFramesRef.current = decoded.frames;
+
+      // Subsample for display to avoid Ink/React stack overflow on large logs
+      let displayFrames = decoded.frames;
+      if (decoded.frames.length > MAX_DISPLAY_FRAMES) {
+        const step = Math.ceil(decoded.frames.length / MAX_DISPLAY_FRAMES);
+        displayFrames = [];
+        for (let i = 0; i < decoded.frames.length; i += step) {
+          displayFrames.push(decoded.frames[i]);
+        }
+        // Always include the last frame
+        if (displayFrames[displayFrames.length - 1] !== decoded.frames[decoded.frames.length - 1]) {
+          displayFrames.push(decoded.frames[decoded.frames.length - 1]);
+        }
+      }
+
+      setFrames(displayFrames);
       setVersion(decoded.version);
       setSkippedBytes(decoded.skippedBytes);
 
-      // Analyze flight
+      // Analyze using FULL frame set for accurate stats
       const flightStats = analyzeFlight(decoded.frames, decoded.version);
       setStats(flightStats);
 
@@ -114,10 +141,13 @@ export function useFlightData(binFile?: string, simFile?: string): FlightDataRes
 
       setLoading(false);
     } catch (e) {
+      if (e instanceof Error) process.stderr.write((e.stack ?? e.message) + '\n');
       setError(e instanceof Error ? e.message : String(e));
       setLoading(false);
     }
+    }, 200); // end setTimeout — delay to clear React's call stack
+    return () => clearTimeout(timer);
   }, [binFile, simFile]);
 
-  return { loading, error, frames, stats, sim, version, skippedBytes };
+  return { loading, error, frames, allFramesRef, stats, sim, version, skippedBytes };
 }
