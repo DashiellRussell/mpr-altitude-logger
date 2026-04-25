@@ -1,0 +1,716 @@
+\documentclass[11pt,a4paper,oneside]{report}
+
+% --- Packages ---
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.2cm,headheight=14pt]{geometry}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{amssymb}
+\tcbuselibrary{skins,breakable,listings}
+
+% --- Colours ---
+\definecolor{rocketred}{HTML}{C8102E}
+\definecolor{rocketblue}{HTML}{14375F}
+\definecolor{warnyellow}{HTML}{F5C518}
+\definecolor{gogreen}{HTML}{2E7D32}
+\definecolor{nogored}{HTML}{B71C1C}
+\definecolor{softgrey}{HTML}{F5F5F5}
+\definecolor{linegrey}{HTML}{888888}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=rocketblue,
+  urlcolor=rocketblue,
+  pdftitle={Pre-Launch Procedures},
+  pdfauthor={MPR Altitude Logger Team}
+}
+
+% --- Chapter: completely suppressed. We use \rsection (defined later)
+%     to render the visible title page, bump the chapter counter, and
+%     write the TOC entry — without invoking \chapter's heading machinery.
+\makeatletter
+\renewcommand{\@makechapterhead}[1]{}
+\renewcommand{\@makeschapterhead}[1]{}
+\makeatother
+
+% Section / subsection styling
+\titleformat{\section}
+  {\normalfont\sffamily\Large\bfseries\color{rocketblue}}{\thesection}{0.8em}{}
+\titleformat{\subsection}
+  {\normalfont\sffamily\large\bfseries\color{rocketblue!85!black}}{\thesubsection}{0.6em}{}
+
+% Headers / footers
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\sffamily\small\textcolor{linegrey}{Pre-Launch Procedures}}
+\fancyhead[R]{\sffamily\small\textcolor{linegrey}{\leftmark}}
+\fancyfoot[C]{\sffamily\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \fancyfoot[C]{\sffamily\small\thepage}%
+  \renewcommand{\headrulewidth}{0pt}%
+}
+
+% --- Custom callout boxes ---
+% NOTE: warnbox and gobox are intentionally NOT breakable so they stay
+% on a single page. If they don't fit, they push to the next page.
+\newtcolorbox{warnbox}{
+  enhanced,
+  colback=warnyellow!15, colframe=warnyellow!85!black,
+  boxrule=0.8pt, arc=2pt,
+  left=8pt, right=8pt, top=4pt, bottom=4pt,
+  before skip=10pt, after skip=10pt,
+  title={\textbf{WARNING}}, fonttitle=\sffamily\bfseries,
+  coltitle=black, colbacktitle=warnyellow,
+  attach boxed title to top left={xshift=8pt, yshift=-2pt},
+  boxed title style={colback=warnyellow, colframe=warnyellow!85!black, sharp corners=northwest, sharp corners=northeast, arc=2pt}
+}
+
+\newtcolorbox{gobox}{
+  enhanced,
+  colback=gogreen!8, colframe=gogreen,
+  boxrule=0.8pt, arc=2pt,
+  left=8pt, right=8pt, top=4pt, bottom=4pt,
+  before skip=10pt, after skip=10pt,
+  title={\textbf{GO / NO-GO}}, fonttitle=\sffamily\bfseries,
+  coltitle=white, colbacktitle=gogreen,
+  attach boxed title to top left={xshift=8pt, yshift=-2pt},
+  boxed title style={colback=gogreen, sharp corners=northwest, sharp corners=northeast, arc=2pt}
+}
+
+\newtcolorbox{infobox}{
+  enhanced, breakable,
+  colback=softgrey, colframe=linegrey,
+  boxrule=0.4pt, arc=2pt,
+  left=8pt, right=8pt, top=4pt, bottom=4pt
+}
+
+% --- Code block (verbatim shell commands) ---
+\newtcblisting{codebox}{
+  enhanced, breakable,
+  listing only,
+  colback=black!92, colframe=black!92,
+  coltext=white,
+  arc=2pt, boxrule=0pt,
+  left=10pt, right=10pt, top=4pt, bottom=4pt,
+  listing options={
+    basicstyle=\ttfamily\small\color{white},
+    breaklines=true,
+    breakatwhitespace=false,
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false
+  }
+}
+
+% --- Inline tweaks ---
+% Checkbox bullet for action items (printable, can be ticked by hand)
+\newcommand{\cbox}{\raisebox{-0.5pt}{\large$\square$}}
+\setlist[itemize,1]{label=\cbox, leftmargin=1.8em, itemsep=3pt, topsep=3pt}
+\setlist[itemize,2]{label=\cbox, leftmargin=1.6em, itemsep=2pt, topsep=2pt}
+\setlist[enumerate]{leftmargin=1.8em, itemsep=3pt, topsep=3pt}
+
+% Plain-bullet itemize for non-actionable lists (LED reference, abbreviations)
+\newlist{plainitem}{itemize}{2}
+\setlist[plainitem]{label=\textbullet, leftmargin=1.4em, itemsep=2pt, topsep=2pt}
+
+\newcommand{\done}[1]{\bigskip\begin{center}\sffamily\bfseries\Large\textcolor{rocketred}{#1}\end{center}\bigskip}
+
+% --- Document ---
+\begin{document}
+
+% ===== Title page =====
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+  {\sffamily\bfseries\color{rocketblue}\Huge Pre-Launch Procedures\par}
+  \vspace{0.5cm}
+  {\color{linegrey}\rule{0.6\textwidth}{1pt}\par}
+  \vspace{0.8cm}
+  {\sffamily\Large Hobby Rocket Launch\par}
+  \vspace{2cm}
+
+  \begin{tabular}{rl}
+    \sffamily\bfseries Vehicle: & Hobby rocket \\[4pt]
+    \sffamily\bfseries Avionics firmware: & v2.0.0 (MPR Altitude Logger) \\[4pt]
+    \sffamily\bfseries Document version: & 1.0 \\[4pt]
+    \sffamily\bfseries Date: & \today \\
+  \end{tabular}
+
+  \vfill
+
+  \begin{infobox}
+    \sffamily\small
+    \textbf{Conventions} \\[2pt]
+    \textbf{T-N} = N days before launch day. T-0 = launch day at the field. \\
+    \textbf{GO / NO-GO} blocks at the end of each phase are mandatory checkpoints --- if any condition fails, do not proceed without the relevant lead's sign-off. \\
+    All \texttt{pnpm} commands run from \texttt{\textasciitilde/Documents/mpr-altitude-logger} on Dash's laptop.
+  \end{infobox}
+
+  \vspace{1cm}
+\end{titlepage}
+
+% ===== Front matter =====
+\thispagestyle{plain}
+\section*{Abbreviations}
+\begin{plainitem}
+  \item \textbf{ORK} --- OpenRocket simulation file
+  \item \textbf{lwr} --- lower (bulkhead)
+  \item \textbf{AGL} --- altitude above ground level
+  \item \textbf{WDT} --- watchdog timer (reboot if firmware hangs)
+  \item \textbf{SD} --- SD card (microSD on the avionics PCB)
+  \item \textbf{TUI} --- text-based UI on the laptop (preflight / postflight tools)
+  \item \textbf{PCB} --- printed circuit board (the avionics flight computer)
+\end{plainitem}
+
+\tableofcontents
+\clearpage
+
+% ===== Section title page macro =====
+% \rsection{Title}{Subtitle} — renders a full-page section title,
+% bumps the chapter counter, and adds a TOC entry.
+\newcommand{\rsection}[2]{%
+  \refstepcounter{chapter}%
+  \setcounter{section}{0}%
+  \addcontentsline{toc}{chapter}{\protect\numberline{\thechapter}#1}%
+  \clearpage
+  \thispagestyle{empty}%
+  \markboth{#1}{}%
+  \vspace*{\fill}
+  \begin{center}
+    {\sffamily\color{linegrey}\Large Section \thechapter}\\[6pt]
+    {\color{rocketred}\rule{0.4\textwidth}{1.5pt}}\\[20pt]
+    {\sffamily\bfseries\color{rocketblue}\Huge #1}\\[12pt]
+    {\sffamily\large\color{linegrey}\itshape #2}
+  \end{center}
+  \vspace*{\fill}
+  \clearpage
+}
+% Legacy alias so existing \chapter+\sectiontitlepage pairs still work
+\newcommand{\sectiontitlepage}[2]{}
+
+% --- Section page breaks ---
+% \section{} (T-1, T-0, Post-flight, Field Recovery, Comms, etc.) starts on a new page.
+% \proc{}  is a procedure heading that flows inline (no forced page break).
+\let\rsoldsection\section
+\renewcommand{\section}[1]{\clearpage\rsoldsection{#1}}
+
+\newcommand{\proc}[1]{\subsection*{#1}}
+
+% =====================================================================
+\rsection{Aerostructures}{Airframe build, ballast, integration}
+
+\section{T-1}
+
+\proc{Check wind predictions for the day}
+\begin{itemize}
+  \item Pull forecast for the launch site, hour-by-hour for the launch window
+  \item Conduct additional ORK simulations at predicted windspeed $\pm$ 20\%
+  \item Calculate appropriate ballast for windspeed at predicted $\pm$ 50\%
+  \item Record the ballast mass for each scenario in the team sheet
+\end{itemize}
+
+\section{T-0 (Launch Day)}
+
+\proc{Install eyebolt in lower bulkhead}
+\begin{itemize}
+  \item Drill as close to the centre as possible
+  \item Use the pre-marked drill jig if available
+  \item Confirm eyebolt threads engage cleanly before epoxy step
+\end{itemize}
+
+\proc{Motor integration}
+\begin{itemize}
+  \item Friction-fit the motor into the airframe
+  \item Use the motor retention clip to retain the motor
+  \item Confirm clip is fully seated --- no visible gap
+\end{itemize}
+
+\proc{Measure wind}
+\begin{itemize}
+  \item Use the handheld anemometer (the ``fan-lookin' thing'')
+  \item Record three readings 30 seconds apart at pad height
+  \item If wind exceeds the launch limit from your ORK sims, hold
+\end{itemize}
+
+\proc{Add ballast to the tip of the nose cone}
+\begin{itemize}
+  \item Mix up some 5-minute epoxy
+  \item Log weight of mixed epoxy
+  \item Measure split shot weight: $W_{ss} = W_{ballast} - W_{epoxy}$
+  \item Place split shot sinkers at the tip of the nose cone, then add the epoxy
+  \item Hold the nosecone nose-down until the epoxy cures ($\sim$5 min, verify with toothpick)
+\end{itemize}
+
+\proc{Add battery (coordinate with Avionics --- battery only goes in AFTER avionics bench check passes)}
+\begin{itemize}
+  \item Connect battery to the flight computer
+  \item Battery life on fresh 9V alkaline: $\sim$4+ hours idle. Install within 1 hour of launch slot. Set a phone timer.
+  \item Lower battery into the slot in the nose cone
+  \item Secure battery: electrical tape preferred. Hot glue is a fallback only --- accept that it may shift under boost loads.
+\end{itemize}
+
+\proc{Install flight computer}
+\begin{itemize}
+  \item Lower the connected PCB into the nosecone
+  \item Use 3$\times$ M3 magnetic screws + screwdriver to screw the PCB in place
+  \item DO NOT overtighten --- PLA threads strip easily
+  \item Verify slow-blink LED is still visible through the nosecone vent / pressure hole before sealing
+  \item Note: the lower bulkhead glue (next step) seals the bay. Post-flight recovery requires cutting the nosecone open --- the screws are only accessible after that cut.
+\end{itemize}
+
+\proc{Install lower bulkhead}
+\begin{itemize}
+  \item Mix up 5-minute epoxy
+  \item Lather the sides and rear of the bulkhead with epoxy
+  \item Using the eyebolt, hold the bulkhead in place until epoxy cures
+  \item Tie the shock cord to the eyebolt
+\end{itemize}
+
+\done{NOSECONE DONE!}
+
+\proc{Integrate nosecone with main airframe}
+
+\proc{Drill pressure hole}
+\begin{itemize}
+  \item Take care not to drill into the avionics bay or shock cord
+  \item Hole diameter per design spec --- confirm before drilling
+\end{itemize}
+
+\begin{gobox}
+\textbf{GO:} ballast logged, motor retained, bulkhead cured, pressure hole drilled, avionics LED slow-blinking through pressure hole. \\[4pt]
+\textbf{NO-GO:} any epoxy uncured, motor not fully seated, avionics LED solid or absent.
+\end{gobox}
+
+\done{STRUCTURES DONE}
+
+% =====================================================================
+\rsection{Avionics}{Firmware, preflight, GO/NO-GO, recovery cut-out}
+
+\section{T-1}
+
+\proc{Firmware deploy (Dash's laptop, board on USB)}
+
+\begin{codebox}
+cd ~/Documents/mpr-altitude-logger
+git status            # clean tree, or know what's dirty
+pnpm version          # must print: Firmware version: 2.0.0
+pnpm deploy:pico      # wait for VERIFY_OK at the bottom
+\end{codebox}
+
+\begin{itemize}
+  \item If any module reports \texttt{FAIL}, STOP --- fix on the bench, do not bring a half-deployed board to the field
+\end{itemize}
+
+\proc{Bench preflight (smoke test on home network/desk before packing)}
+\begin{itemize}
+  \item \texttt{pnpm preflight}
+  \item Confirm all rails green, I2C 0x77 present, BMP180 chip ID OK, RAM free $>$ 50 KB
+  \item Press \texttt{[Q]} to quit cleanly
+\end{itemize}
+
+\proc{10-minute logging stress test (T-1 only --- too slow for launch day)}
+
+The board flies for less than a minute, but a degraded SD or marginal timing only shows up over many minutes. Run this once the night before.
+
+\begin{itemize}
+  \item \texttt{pnpm preflight} $\to$ \texttt{[R]} recalibrate $\to$ \texttt{[B]} boot to PAD
+  \item Disconnect USB. Power the board from a 9V (or leave on USB if you trust the host won't sleep) for at least 10 minutes
+  \item LED should be slow-blink (PAD) the whole time. If it ever goes solid, abort the test and investigate.
+  \item After 10 min, power off, pull SD, insert into laptop, then:
+\end{itemize}
+
+\begin{codebox}
+pnpm decode -- "/Volumes/AVIONICS/AVIONICS_flight_NNN.bin" --plot
+\end{codebox}
+
+\begin{itemize}
+  \item Verify, at 50 Hz sample rate:
+  \begin{itemize}
+    \item Frame count $\approx$ 30,000 $\pm$ 1\% over 600 s (i.e. 29,700--30,300 frames)
+    \item Mean sample interval = 20 ms $\pm$ 1 ms
+    \item No timing gap $>$ 50 ms (one missed frame is suspicious; multiple = bad)
+    \item No \texttt{[CRASH REBOOT]} line in the boot log on next power-up
+    \item File grew monotonically (no truncation), no \texttt{\textbackslash xAA\textbackslash x55} resync gaps in the middle
+  \end{itemize}
+  \item If frame count is short, intervals are off, or there are gaps, do NOT fly --- swap SD card and re-run. If a fresh SD also fails, investigate firmware before bringing the board to the field.
+\end{itemize}
+
+\proc{SD card prep}
+\begin{itemize}
+  \item Confirm SD seated in the avionics PCB
+  \item FAT32 formatted, $>$ 50 MB free (check the existing \texttt{flights/} folder isn't full)
+  \item Spare SD card formatted FAT32 and packed
+\end{itemize}
+
+\proc{Battery prep}
+\begin{itemize}
+  \item 2$\times$ fresh 9V alkaline (one flight, one spare)
+  \item Unloaded multimeter check --- reject anything under 9.0 V
+  \item Tape over terminals until install
+\end{itemize}
+
+\section{T-0 (Launch Day)}
+
+\proc{Bench preflight at the field (do this BEFORE Aerostructures starts nosecone integration)}
+\begin{itemize}
+  \item Connect Pico to laptop via USB. Wait for \texttt{/dev/cu.usbmodem*} to appear.
+\end{itemize}
+
+\begin{codebox}
+cd ~/Documents/mpr-altitude-logger
+pnpm preflight
+\end{codebox}
+
+\begin{itemize}
+  \item Verify EVERY line is green:
+  \begin{itemize}
+    \item I2C scan finds device 0x77
+    \item BMP180 chip ID OK
+    \item Pressure within $\pm$5 hPa of weather report (sanity-check the sensor)
+    \item 3V3 rail in 3.0--3.6 V
+    \item 5V rail in 4.5--5.5 V
+    \item 9V rail in 8.0--10.0 V --- if low, swap battery now
+    \item SD mounted, free space $>$ 50 MB
+    \item Frame size = 40 bytes (v3 log format)
+  \end{itemize}
+  \item If anything is red, run \texttt{pnpm pico:diag} for raw live diagnostics
+\end{itemize}
+
+\proc{Calibrate and arm}
+\begin{itemize}
+  \item Press \texttt{[R]} to recalibrate ground pressure at pad elevation
+  \item Watch the live altitude trace for 10--15 seconds standing still
+  \item Filtered altitude must hold within $\pm$1 m and not drift. If it drifts, recalibrate. If it still drifts, abort to NO-GO.
+  \item Press \texttt{[B]} to boot into flight mode
+  \item TUI exits cleanly. LED transitions to slow blink (1 s on / 1 s off) = PAD state, armed, logging-ready
+  \item Disconnect USB. Do NOT pull power yet --- flight battery only from here on
+\end{itemize}
+
+\proc{Hand off to Aerostructures}
+\begin{itemize}
+  \item Coordinate the ``Add battery'' $\to$ ``Install flight computer'' $\to$ ``Install lower bulkhead'' sequence
+  \item Battery should be installed within 1 hour of expected launch slot --- phone timer mandatory
+  \item After battery is connected and PCB installed, confirm slow-blink LED is visible through the nosecone vent before Aerostructures closes the bulkhead
+\end{itemize}
+
+\proc{Final pad check (just before vertical)}
+\begin{itemize}
+  \item Visually confirm slow-blink LED through the pressure hole / vent
+  \item Slow blink only = GO. Anything else = NO-GO
+  \item No laptop interaction at the pad. The board self-detects launch (alt $>$ 15 m AND velocity $>$ 10 m/s, sustained 0.5 s)
+\end{itemize}
+
+\proc{LED reference (memorise this)}
+\begin{plainitem}
+  \item Fast blink (250 ms) --- booting / preflight in progress
+  \item Solid ON --- error
+  \item \textbf{Slow blink (1 s) --- PAD, ready, safe to fly}
+  \item Fast blink (50 ms) --- BOOST detected
+  \item Medium blink --- COAST / DROGUE / MAIN descent
+  \item Double flash --- APOGEE
+  \item Triple flash --- LANDED, data safe
+\end{plainitem}
+
+\section{Post-flight (after recovery)}
+
+The avionics PCB is held by 3$\times$ M3 screws, but the lower bulkhead is epoxied in place --- so the bay is sealed and the screws cannot be reached without cutting the nosecone open. Power is still live until the battery is unplugged --- treat the board as energised.
+
+\proc{Cut the nosecone}
+Choose ONE cut location:
+\begin{itemize}
+  \item \textbf{Option A} --- circumferential cut \emph{just below the avionics} (between PCB and the lower bulkhead). Exposes the battery side first.
+  \item \textbf{Option B} --- circumferential cut \emph{just above the avionics} (between PCB and the nose tip / ballast). Exposes the PCB top side first.
+\end{itemize}
+
+\begin{itemize}
+  \item Mark the cut line with a pencil all the way around before cutting
+  \item Use a hand saw, rotary tool, or sharp knife --- slow and steady, multiple shallow passes
+  \item Pause and inspect every few mm. Pull debris out as you go.
+\end{itemize}
+
+\begin{warnbox}
+Stop cutting the moment you feel the wall give. Do NOT push the blade past the wall thickness --- the board, battery, or wiring is directly behind it.
+\end{warnbox}
+
+\proc{Disconnect the battery FIRST}
+\begin{itemize}
+  \item Once the cut is open, locate the battery clip and disconnect it before doing anything else
+  \item LED should go dark --- confirms power is off
+  \item Tape over the 9V terminals immediately
+\end{itemize}
+
+\proc{Free the PCB and SD}
+\begin{itemize}
+  \item Brush or blow swarf out of the bay before unscrewing
+  \item Reach through the cut and unscrew the 3$\times$ M3 PCB screws
+  \item Catch each screw as it comes out --- if one drops into the bay it can roll under the PCB and short it. Account for all 3.
+  \item Lift the PCB out cleanly, supporting it by the edges (not by components)
+  \item Pull the SD card out cleanly
+\end{itemize}
+
+\begin{warnbox}
+Do NOT let a screw, screwdriver tip, blade, or piece of plastic swarf touch the board while power is live or after. Debris bridging pads can short the board and brick it.
+\end{warnbox}
+
+\proc{Decode the flight}
+\begin{itemize}
+  \item Insert the SD card into laptop --- auto-mounts as \texttt{/Volumes/AVIONICS/}
+  \item \texttt{pnpm postflight} --- TUI auto-detects SD, lists flights newest first, decodes selected flight
+  \item Save the \texttt{.bin}, \texttt{.csv}, and \texttt{\_report.txt} to the \texttt{flights/} folder
+  \item If summary looks anomalous: \texttt{pnpm decode -- "flights/AVIONICS\_flight\_NNN.bin" --plot} to inspect raw frames
+  \item If a \texttt{[CRASH REBOOT]} line appears in the boot log, save the file and flag it before the next flight --- do not reuse the SD until investigated
+\end{itemize}
+
+\proc{Multi-flight day --- between flights}
+\begin{itemize}
+  \item Disconnect avionics power, eject and reseat SD, swap or top up 9V
+  \item USB $\to$ laptop $\to$ \texttt{pnpm preflight} $\to$ \texttt{[R]} recalibrate $\to$ \texttt{[B]} boot
+  \item Disconnect $\to$ into airframe
+  \item Each flight gets an auto-incremented filename (\texttt{AVIONICS\_flight\_NNN.bin}) --- no overwrite risk
+\end{itemize}
+
+\begin{gobox}
+\textbf{GO:} all preflight rails green, ground pressure calibrated, slow-blink LED on PAD, SD mounted with $>$ 50 MB free. \\[4pt]
+\textbf{NO-GO} (any of these = scratch the flight):
+\begin{itemize}
+  \item Solid LED at any point after preflight
+  \item 9V rail $<$ 8.5 V on TUI
+  \item Altitude drift $>$ 2 m on bench
+  \item SD won't mount or $<$ 10 MB free
+  \item Frame timing $>$ 30 ms in pico\_diag
+  \item Stuck fast-blink LED that won't settle to slow blink within 30 s of boot
+\end{itemize}
+\end{gobox}
+
+\proc{Emergency: avionics won't boot at the pad}
+\begin{enumerate}
+  \item Solid LED $\to$ known-bad state. No spare PCB --- scratch the flight.
+  \item No LED at all $\to$ power. Check 9V, switch, connector.
+  \item Stuck fast-blink $\to$ power cycle once. If it repeats, swap SD card first (cheapest, fastest fix).
+\end{enumerate}
+
+\textit{When in doubt, scratch. A scratched flight is recoverable; a corrupt log is not.}
+
+\done{AVIONICS DONE!}
+
+% =====================================================================
+\rsection{Recovery}{Chute pack, field recovery, avionics handling}
+
+\begin{infobox}
+\textbf{Deployment:} chute is deployed by the motor's delay charge. There are no separate pyro charges, e-matches, or electronic deployment. The motor's delay grain ejects the chute via the forward closure when the propellant burns through.
+\end{infobox}
+
+\section{T-1}
+
+\proc{Chute inspection}
+\begin{itemize}
+  \item Unfold chute fully, lay flat
+  \item Check canopy for tears, scorch marks, melted shroud lines
+  \item Check shock cord for fraying, knots holding firm
+  \item Check swivels and quick links for damage
+  \item Repack chute loosely (final pack happens T-0)
+\end{itemize}
+
+\section{T-0 (Launch Day)}
+
+\proc{Chute pack and install}
+\begin{itemize}
+  \item Fold chute per team's standard fold (Z-fold or roll, whatever you train on)
+  \item Wrap in nomex or chute protector to shield from motor exhaust gases
+  \item Connect to shock cord, shock cord to eyebolt on lower bulkhead
+  \item Pack into airframe, leaving room above for ejection
+  \item Confirm motor delay matches predicted apogee time from ORK sim --- if delay is too short the chute deploys under high speed and shreds; too long and the rocket lawn-darts
+\end{itemize}
+
+\begin{warnbox}
+The motor delay must match the predicted coast time. Verify the motor designation includes the right delay (e.g.\ \texttt{H100-7} = 7-second delay). A wrong delay = destroyed rocket. Check twice before motor install.
+\end{warnbox}
+
+\begin{gobox}
+\textbf{GO:} chute inspected, packed, shock cord connected, motor delay matches sim ($\pm$1 s). \\[4pt]
+\textbf{NO-GO:} damaged canopy, frayed shock cord, motor delay mismatch.
+\end{gobox}
+
+\section{Field Recovery (post-launch)}
+
+\proc{Watch and track}
+\begin{itemize}
+  \item Eyes on the rocket from launch to landing --- assign a designated tracker
+  \item Note apogee location and chute deployment (visible puff)
+  \item Track descent direction; note landmarks near landing zone
+  \item Wait for Range Director's clearance before walking onto the field
+\end{itemize}
+
+\proc{Walk-out}
+\begin{itemize}
+  \item Recovery team: 2+ people, hi-vis vests, phone with GPS, radio if available
+  \item Don't cross active landing zones for other rockets until cleared
+  \item Photograph the landing site before touching --- captures orientation and any damage
+\end{itemize}
+
+\proc{Approach the rocket}
+\begin{itemize}
+  \item Spent motor case may still be hot --- give it a few minutes if you arrive fast
+  \item Inspect for damage: bent fins, cracked airframe, tangled chute, missing nosecone
+  \item Check chute condition for post-flight notes
+\end{itemize}
+
+\proc{Avionics handling in the field}
+
+The avionics is still powered. The board's last act is to detect LANDED and flush the SD --- the LED tells you whether that worked.
+
+\begin{itemize}
+  \item Look at the LED through the nosecone vent / pressure hole:
+  \begin{itemize}
+    \item \textbf{Triple flash} = LANDED, data flushed, safe to transport. Best case.
+    \item \textbf{Slow blink} = still in PAD --- launch was never detected, log will be short or empty
+    \item \textbf{Other pattern} = stuck in a mid-flight state, may not have flushed cleanly
+  \end{itemize}
+  \item DO NOT disconnect the battery in the field unless you have to. Let the board sit at LANDED so any pending writes finish.
+  \item If the LED is in an odd state, photograph it before moving --- useful for post-flight diagnosis
+\end{itemize}
+
+\begin{warnbox}
+Vibration during SD writes can corrupt the last few frames. If the board is still mid-flush (slow LED, not yet triple flash), avoid jostling the rocket. Walking it back is fine; throwing it in the back of a car is not.
+\end{warnbox}
+
+\proc{Transport back to bench}
+\begin{itemize}
+  \item Carry the rocket supported, not by the nosecone (cumulative shock isn't great for the SD)
+  \item Battery stays connected. If transport is $>$ 30 min and the LED is showing triple flash (LANDED), you can power off if needed --- the data is safe.
+  \item Bag the rocket if it's wet, muddy, or going through dust
+  \item Once at the bench, hand off to Avionics for the post-flight cut-out (see Avionics section)
+\end{itemize}
+
+\proc{If the rocket is lost / unrecoverable}
+\begin{itemize}
+  \item Mark the last seen position on a map (phone GPS pin)
+  \item Search in expanding circles from predicted landing zone
+  \item Ask other teams if they spotted it
+  \item If unrecoverable: the SD card and battery are in the rocket, and the data is gone. Note for post-mortem.
+\end{itemize}
+
+\done{RECOVERY DONE}
+
+% =====================================================================
+\rsection{Propulsions}{Motor, igniter, paperwork}
+
+\begin{infobox}
+\textbf{TO FILL IN --- owner: \rule{4cm}{0.4pt}}
+\end{infobox}
+
+Suggested structure:
+\begin{plainitem}
+  \item \textbf{T-1:} motor inspection, igniter inventory, certification paperwork
+  \item \textbf{T-0:} motor install (coordinate with Aerostructures), igniter install, continuity check, GO/NO-GO criteria
+  \item \textbf{Post-flight:} motor case retrieval, post-fire inspection
+\end{plainitem}
+
+% =====================================================================
+\rsection{Master Timeline (T-0)}{Sequencing and comms}
+
+Approximate, adjust to launch slot:
+
+\renewcommand{\arraystretch}{1.3}
+\begin{longtable}{@{}p{3cm} p{4.5cm} p{8cm}@{}}
+\toprule
+\textbf{Time} & \textbf{Owner} & \textbf{Action} \\
+\midrule
+\endhead
+Slot - 3:00 h & All & Arrive, unpack, set up bench \\
+Slot - 2:30 h & Aerostructures & Eyebolt, motor friction fit, ballast prep \\
+Slot - 2:00 h & Avionics & Bench preflight, calibrate, boot to PAD \\
+Slot - 1:30 h & Avionics + Aerostructures & Battery install, PCB install in nosecone \\
+Slot - 1:15 h & Aerostructures & Lower bulkhead epoxy, nosecone integration \\
+Slot - 0:45 h & Recovery + Propulsions & Charges, igniter, final continuity \\
+Slot - 0:30 h & All & Walk to pad, vertical, final visual checks \\
+Slot - 0:10 h & Range & Range crew takeover \\
+\textbf{Slot 0:00} & --- & \textbf{LAUNCH} \\
+Slot + 0:30 h & All & Recovery walk \\
+Slot + 1:00 h & Avionics & Cut nosecone, disconnect battery, pull SD, postflight decode \\
+\bottomrule
+\end{longtable}
+
+\section{Comms}
+\begin{itemize}
+  \item \textbf{Launch Director} calls GO/NO-GO at each phase. Anyone can call NO-GO at any time for any reason.
+  \item Subsystem leads must verbally confirm GO at handoff points (Avionics $\to$ Aerostructures battery install, etc.)
+\end{itemize}
+
+% =====================================================================
+\rsection{Pack List}{What goes in the box}
+
+\section{Structures}
+\begin{itemize}
+  \item Spare nosecone
+  \item 5-minute epoxy (lower bulkhead)
+  \item 3$\times$ M3 magnetic screws (avionics PCB) + spares
+  \item Magnetic screwdriver (M3 bit) --- PCB install + post-flight removal
+  \item Split shot sinkers
+  \item Eye bolt
+  \item Drill + drill bits (eyebolt + pressure hole)
+  \item Toothpicks (epoxy cure check)
+  \item Electrical tape, hot glue gun + sticks (fallback)
+  \item Hand saw / Dremel / sharp knife (for post-flight nosecone cut)
+  \item Bench vice or clamp (to hold nosecone steady during cut)
+  \item Safety glasses
+\end{itemize}
+
+\section{Avionics}
+\begin{itemize}
+  \item Laptop + charger (Dash)
+  \item USB-A to micro-USB cable --- DATA capable, not charge-only
+  \item 2$\times$ fresh 9V batteries (alkaline)
+  \item Multimeter
+  \item Spare SD card, formatted FAT32
+  \item USB SD card reader
+  \item Printout of this doc (no field wifi guaranteed)
+\end{itemize}
+
+\section{Recovery}
+\begin{itemize}
+  \item Parachute (main + drogue if applicable)
+  \item Shock cord, swivels
+  \item Ejection charges (per manifest)
+  \item Igniter / e-match wire
+  \item Continuity tester
+  \item Nomex / chute protector
+  \item Spare quick links
+\end{itemize}
+
+\section{Propulsions}
+\begin{itemize}
+  \item Motor (per manifest)
+  \item Spare igniter(s)
+  \item Motor retention clip
+  \item Cert paperwork
+  \item Igniter wire
+  \item Continuity tester (shared with Recovery OK)
+\end{itemize}
+
+\section{Shared}
+\begin{itemize}
+  \item First aid kit
+  \item Hi-vis vests
+  \item Sunscreen, water, snacks
+  \item Folding table, chairs
+  \item Power bank for laptop
+\end{itemize}
+
+\end{document}
