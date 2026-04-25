@@ -1,0 +1,118 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1.5cm]{geometry}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{multicol}
+\usepackage{titlesec}
+\usepackage{amssymb}
+
+\definecolor{rocketblue}{HTML}{14375F}
+\definecolor{rocketred}{HTML}{C8102E}
+\definecolor{linegrey}{HTML}{888888}
+
+\pagestyle{empty}
+
+\titleformat{\section}
+  {\normalfont\sffamily\Large\bfseries\color{rocketblue}}{}{0pt}{}
+\titlespacing*{\section}{0pt}{8pt}{2pt}
+
+\newcommand{\cbox}{\raisebox{-0.5pt}{\large$\square$}}
+\setlist[itemize]{label=\cbox, leftmargin=1.6em, itemsep=1pt, topsep=1pt, parsep=0pt}
+
+\begin{document}
+
+\begin{center}
+  {\sffamily\bfseries\color{rocketblue}\Huge Launch Day Pack List}\\[2pt]
+  {\sffamily\color{linegrey}\large Hobby Rocket Launch \quad\textbar\quad \today}\\[2pt]
+  {\color{rocketred}\rule{0.4\textwidth}{1pt}}
+\end{center}
+
+\vspace{4pt}
+
+\begin{multicols}{2}
+
+\section*{Structures}
+\begin{itemize}
+  \item Spare nosecone
+  \item 5-minute epoxy (lower bulkhead)
+  \item 3$\times$ M3 magnetic screws + spares
+  \item Magnetic screwdriver (M3 bit)
+  \item Split shot sinkers
+  \item Eye bolt
+  \item Drill + drill bits
+  \item Toothpicks (epoxy cure check)
+  \item Electrical tape
+  \item Hot glue gun + sticks (fallback)
+  \item Hand saw / Dremel / sharp knife (post-flight cut)
+  \item Bench vice or clamp
+  \item Safety glasses
+\end{itemize}
+
+\section*{Avionics}
+\begin{itemize}
+  \item Laptop + charger (Dash)
+  \item USB-A to micro-USB cable (DATA, not charge-only)
+  \item 2$\times$ fresh 9V batteries (alkaline)
+  \item Multimeter
+  \item Spare SD card, formatted FAT32
+  \item USB SD card reader
+  \item Printout of PreLaunchProcs.pdf
+\end{itemize}
+
+\section*{Recovery}
+\begin{itemize}
+  \item Parachute (main + drogue if applicable)
+  \item Shock cord, swivels
+  \item Ejection charges (per manifest)
+  \item Igniter / e-match wire
+  \item Continuity tester
+  \item Nomex / chute protector
+  \item Spare quick links
+\end{itemize}
+
+\section*{Propulsions}
+\begin{itemize}
+  \item Motor (per manifest)
+  \item Spare igniter(s)
+  \item Motor retention clip
+  \item Cert paperwork
+  \item Igniter wire
+  \item Continuity tester (shared with Recovery OK)
+\end{itemize}
+
+\section*{Shared / On-the-day}
+\begin{itemize}
+  \item First aid kit
+  \item Hi-vis vests
+  \item Sunscreen, water, snacks
+  \item Folding table, chairs
+  \item Power bank for laptop
+  \item Sharpie + masking tape (labels)
+  \item Phone (timers, comms, photos)
+  \item Trash bag
+\end{itemize}
+
+\section*{Pre-departure final checks}
+\begin{itemize}
+  \item Firmware deployed and verified (\texttt{pnpm version} = 2.0.0)
+  \item Bench preflight passed at home
+  \item 10-minute stress test passed
+  \item SD card formatted, in PCB
+  \item Batteries multimetered $>$ 9.0 V, terminals taped
+  \item ORK sims for $\pm$20\% / $\pm$50\% wind printed or saved offline
+  \item This pack list checked twice
+\end{itemize}
+
+\end{multicols}
+
+\vspace{4pt}
+\begin{center}
+  {\sffamily\small\color{linegrey}\itshape Tick everything before leaving the door. If something is missing, fix it now, not at the field.}
+\end{center}
+
+\end{document}
