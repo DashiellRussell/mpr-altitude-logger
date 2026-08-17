@@ -1,0 +1,178 @@
+% ── Report Figures for MPR Altitude Logger ──────────────────────
+% Include in the main report with: \input{report_figures}
+% Requires: \usepackage{pgfplots, tikz}
+%           \pgfplotsset{compat=1.18}
+
+\usepackage{pgfplots}
+\usepackage{tikz}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{patterns, positioning, calc}
+
+% ── Figure 1: Flight Profile ───────────────────────────────────
+
+\newcommand{\figFlightProfile}{
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    name=altplot,
+    width=\textwidth,
+    height=5.5cm,
+    ylabel={Altitude AGL (m)},
+    xmin=0, xmax=75,
+    ymin=0, ymax=520,
+    grid=major,
+    grid style={gray!20},
+    legend style={at={(0.97,0.95)}, anchor=north east, font=\footnotesize, fill=white, fill opacity=0.9, draw=gray!50},
+    title={\textbf{Simulated Flight Profile --- H-class Motor}},
+    title style={font=\normalsize},
+    xticklabels={},
+    clip=false,
+]
+
+% State region shading
+\fill[red!8]    (axis cs:0,0) rectangle (axis cs:2.3,520);     % PAD+BOOST
+\fill[orange!10](axis cs:2.3,0) rectangle (axis cs:9.5,520);   % COAST
+\fill[yellow!10](axis cs:9.5,0) rectangle (axis cs:11,520);    % APOGEE
+\fill[green!8]  (axis cs:11,0) rectangle (axis cs:48,520);     % DROGUE
+\fill[blue!6]   (axis cs:48,0) rectangle (axis cs:63,520);     % MAIN
+\fill[purple!6] (axis cs:63,0) rectangle (axis cs:75,520);     % LANDED
+
+% State labels
+\node[font=\tiny\itshape, text=gray] at (axis cs:1.1,495) {BOOST};
+\node[font=\tiny\itshape, text=gray] at (axis cs:5.9,495) {COAST};
+\node[font=\tiny\itshape, text=gray] at (axis cs:29,495) {DROGUE};
+\node[font=\tiny\itshape, text=gray] at (axis cs:55,495) {MAIN};
+\node[font=\tiny\itshape, text=gray] at (axis cs:69,495) {LANDED};
+
+% Raw altitude (noisy) - simplified as a band
+\addplot[gray!40, thin, forget plot] coordinates {
+    (0,0)(0.5,2)(1,28)(1.5,82)(2,148)(2.3,180)
+    (3,240)(4,320)(5,380)(6,420)(7,448)(8,465)(9,475)(9.5,478)
+    (10,476)(12,460)(15,430)(20,370)(25,310)(30,260)
+    (35,215)(40,175)(45,140)(48,120)
+    (50,100)(53,78)(56,55)(59,35)(62,15)(63,5)(65,1)(70,0)(75,0)
+};
+\addplot[gray!40, thin, forget plot] coordinates {
+    (0,0)(0.5,0)(1,24)(1.5,78)(2,144)(2.3,176)
+    (3,236)(4,316)(5,376)(6,416)(7,444)(8,461)(9,471)(9.5,474)
+    (10,472)(12,456)(15,426)(20,366)(25,306)(30,256)
+    (35,211)(40,171)(45,136)(48,116)
+    (50,96)(53,74)(56,51)(59,31)(62,11)(63,2)(65,0)(70,0)(75,0)
+};
+
+% Filtered altitude (clean)
+\addplot[accentblue, thick] coordinates {
+    (0,0)(0.5,1)(1,26)(1.5,80)(2,146)(2.3,178)
+    (3,238)(4,318)(5,378)(6,418)(7,446)(8,463)(9,473)(9.5,476)
+    (10,474)(12,458)(15,428)(20,368)(25,308)(30,258)
+    (35,213)(40,173)(45,138)(48,118)
+    (50,98)(53,76)(56,53)(59,33)(62,13)(63,3)(65,0)(70,0)(75,0)
+};
+
+\legend{Raw barometric, Kalman filtered}
+\end{axis}
+
+% Velocity subplot
+\begin{axis}[
+    at=(altplot.below south west),
+    anchor=north west,
+    width=\textwidth,
+    height=3.5cm,
+    ylabel={Velocity (m/s)},
+    xlabel={Time (s)},
+    xmin=0, xmax=75,
+    ymin=-25, ymax=100,
+    grid=major,
+    grid style={gray!20},
+]
+
+% State region shading (repeated)
+\fill[red!8]    (axis cs:0,-25) rectangle (axis cs:2.3,100);
+\fill[orange!10](axis cs:2.3,-25) rectangle (axis cs:9.5,100);
+\fill[yellow!10](axis cs:9.5,-25) rectangle (axis cs:11,100);
+\fill[green!8]  (axis cs:11,-25) rectangle (axis cs:48,100);
+\fill[blue!6]   (axis cs:48,-25) rectangle (axis cs:63,100);
+\fill[purple!6] (axis cs:63,-25) rectangle (axis cs:75,100);
+
+\draw[black, thin] (axis cs:0,0) -- (axis cs:75,0);
+
+\addplot[red!70!black, thick] coordinates {
+    (0,0)(0.5,10)(1,52)(1.5,78)(2,88)(2.3,85)
+    (3,72)(4,55)(5,40)(6,28)(7,18)(8,10)(9,4)(9.5,1)
+    (10,-2)(12,-6)(15,-8)(20,-9)(25,-9.5)(30,-10)
+    (35,-10)(40,-10)(45,-10)(48,-10)
+    (50,-6)(53,-5)(56,-4)(59,-3)(62,-2)(63,-1)(65,0)(70,0)(75,0)
+};
+
+\end{axis}
+\end{tikzpicture}
+\caption{Simulated flight profile for an H-class motor rocket. Top: raw barometric altitude (grey) and Kalman-filtered estimate (blue). Bottom: estimated vertical velocity. Coloured regions indicate detected flight states.}
+\label{fig:flight-profile}
+\end{figure}
+}
+
+
+% ── Figure 2: Frame Timing Budget ─────────────────────────────
+
+\newcommand{\figTimingBudget}{
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    width=\textwidth,
+    height=5.5cm,
+    xbar,
+    bar width=10pt,
+    xlabel={Time (ms)},
+    xmin=0, xmax=21,
+    ytick={0,1,2,3,4,5,6},
+    yticklabels={
+        {Spin-wait (idle)},
+        {Start next conversion},
+        {SD write (40\,B frame)},
+        {Power rails (3$\times$ ADC)},
+        {State machine},
+        {Kalman filter},
+        {Collect baro result (I\textsuperscript{2}C)}
+    },
+    y dir=reverse,
+    grid=major,
+    grid style={gray!20},
+    title={\textbf{Frame Timing Budget --- Per-Stage Breakdown}},
+    title style={font=\normalsize},
+    nodes near coords={\pgfmathprintnumber\pgfplotspointmeta\,ms},
+    nodes near coords style={font=\tiny, anchor=west, xshift=2pt},
+    nodes near coords align={horizontal},
+    clip=false,
+]
+
+% Active CPU stages (blue)
+\addplot[fill=accentblue, draw=white] coordinates {
+    (1.0, 6)
+    (0.1, 5)
+    (0.05, 4)
+    (0.3, 3)
+    (1.0, 2)
+    (0.1, 1)
+};
+
+% Idle time (grey)
+\addplot[fill=gray!30, draw=white] coordinates {
+    (17.45, 0)
+};
+
+% Budget line
+\draw[red!70!black, dashed, thick] (axis cs:20,-0.5) -- (axis cs:20,6.5)
+    node[pos=0.0, anchor=south east, font=\footnotesize] {20\,ms budget};
+
+% Active CPU line
+\draw[accentblue, dotted, thick] (axis cs:2.55,-0.5) -- (axis cs:2.55,6.5)
+    node[pos=0.0, anchor=south west, font=\footnotesize, xshift=2pt] {\raisebox{0pt}[0pt][0pt]{$\sim$2.6\,ms active}};
+
+\end{axis}
+\end{tikzpicture}
+\caption{Per-stage timing breakdown of the \SI{50}{\hertz} sensor loop. Blue bars represent active CPU work ($\sim$\SI{2.6}{\milli\second} total). The remaining \SI{17.4}{\milli\second} is spent in a spin-wait while the BMP180's internal ADC converts independently. The red dashed line marks the \SI{20}{\milli\second} frame budget.}
+\label{fig:timing-budget}
+\end{figure}
+}

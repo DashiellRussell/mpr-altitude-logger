@@ -1,0 +1,229 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{amsmath}
+\usepackage{siunitx}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{parskip}
+\usepackage{pgfplots}
+\usepackage{tikz}
+\pgfplotsset{compat=1.18}
+
+% Colours
+\definecolor{accentblue}{HTML}{4A9EFF}
+
+% Import figure commands
+\input{report_figures}
+
+% Header/footer
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small\textcolor{gray}{MPR Altitude Logger --- Technical Report}}
+\rhead{\small\textcolor{gray}{UNSW Rocketry}}
+\cfoot{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% Section styling
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\vspace{-0.3em}\rule{\textwidth}{0.4pt}]
+\titleformat{\subsection}{\normalsize\bfseries}{}{0em}{}
+
+\setlist[itemize]{nosep, leftmargin=1.5em}
+\setlist[enumerate]{nosep, leftmargin=1.5em}
+
+\begin{document}
+
+% ── Title ─────────────────────────────────────────────
+\begin{center}
+    {\LARGE\bfseries MPR Altitude Logger}\\[0.4em]
+    {\large A Custom RP2040 Avionics Flight Computer for High-Power Rocketry}\\[1em]
+    {\normalsize Dashiell Russell \quad$\cdot$\quad UNSW Rocketry \quad$\cdot$\quad March 2026}
+\end{center}
+
+\vspace{0.5em}
+
+\begin{abstract}
+\noindent
+This report presents the design and development of the MPR Altitude Logger, a custom avionics flight computer built on the Raspberry Pi Pico (RP2040) for the Australian Universities Rocketry Challenge 2026. The system runs 1,843 lines of MicroPython firmware at \SI{50}{\hertz} on a microcontroller with \SI{264}{\kilo\byte} of RAM and no hardware floating-point unit, supported by approximately 8,500 lines of ground-station tooling. It implements a pipelined sensor architecture, a Kalman filter for altitude and velocity estimation from barometric pressure alone, a seven-state flight detection system with false-launch recovery, and crash-recoverable binary telemetry logging. Three major firmware revisions were driven by an iterative benchmarking cycle using an eight-test on-device diagnostic suite.
+\end{abstract}
+
+% ── Section 1 ─────────────────────────────────────────
+\section{System Architecture}
+
+The flight computer executes a \SI{50}{\hertz} sensor loop on an RP2040 overclocked to \SI{200}{\mega\hertz}. Every \SI{20}{\milli\second} it reads a BMP180 barometer over I\textsuperscript{2}C, runs a Kalman filter, updates the flight state machine, monitors three independent voltage rails via ADC, and writes a 40-byte binary telemetry frame to an SD card over SPI---without performing a single heap allocation in the hot path.
+
+\subsection{Pipelined Sensor Reads}
+
+The BMP180's internal ADC takes \SI{13.5}{\milli\second} per pressure conversion at the selected oversampling rate (OSS\,=\,2). Rather than blocking, the firmware pipelines this: each frame \textit{collects} the result of the previous frame's conversion, performs all computation and I/O, then \textit{kicks off} the next conversion. The CPU's active work per frame totals approximately \SI{2}{\milli\second}; the remaining \SI{17}{\milli\second} is spent in a spin-wait while the sensor converts independently.
+
+\subsection{Kalman Filter}
+
+A one-dimensional Kalman filter estimates altitude and vertical velocity from barometric pressure alone. The state vector is $\mathbf{x} = [\text{altitude},\; \text{velocity}]^\top$ with a constant-velocity process model:
+
+\vspace{-0.5em}
+\begin{equation}
+    \mathbf{x}_{k|k-1} = \mathbf{F}\,\mathbf{x}_{k-1}, \quad
+    \mathbf{F} = \begin{bmatrix} 1 & \Delta t \\ 0 & 1 \end{bmatrix}
+\end{equation}
+
+There is no accelerometer on this board. Velocity is inferred entirely from the filter's prediction--correction cycle, which is sufficient for reliable apogee detection (velocity crossing zero) and tracking all flight phases.
+
+\subsection{Flight State Machine}
+
+Seven flight states are detected and logged in real time: \textsc{pad}, \textsc{boost}, \textsc{coast}, \textsc{apogee}, \textsc{drogue}, \textsc{main}, and \textsc{landed}. All states are tracked for logging only---no deployment hardware exists on this board.
+
+Launch detection uses a two-gate approach: altitude must exceed \SI{15}{\metre} \textit{and} velocity must exceed \SI{10}{\metre\per\second}, both sustained for \SI{0.5}{\second}. This prevents false triggers from wind, board handling, or walking up stairs. A false-launch recovery mechanism monitors the first \SI{2}{\second} after transition to \textsc{boost}: if altitude drops below \SI{10}{\metre} for three consecutive frames, the state machine resets to \textsc{pad}.
+
+\subsection{Binary Telemetry Logging}
+
+Each frame packs 40 bytes of data preceded by a \texttt{0xAA\,0x55} sync header. The format evolved across three firmware versions (Table~\ref{tab:versions}). Due to the efficiency of binary encoding, an \SI{8}{\giga\byte} SD card provides over 1,100 hours of logging capacity.
+
+The flush strategy balances data safety against throughput: buffered writes with a \texttt{flush()} every \SI{1}{\second} and a full FAT metadata \texttt{sync()} every \SI{3}{\second}. State transitions trigger an immediate flush, ensuring the most critical moments are written to disk first.
+
+\figFlightProfile
+
+\subsection{Firmware Composition}
+
+The complete flight firmware comprises 1,843 lines across nine MicroPython files (Table~\ref{tab:firmware}).
+
+\begin{table}[h]
+\centering
+\small
+\caption{Flight firmware modules.}
+\label{tab:firmware}
+\begin{tabularx}{\textwidth}{l r X}
+\toprule
+\textbf{Module} & \textbf{Lines} & \textbf{Role} \\
+\midrule
+\texttt{main.py}                & 564 & Boot sequence, preflight checks, sensor loop \\
+\texttt{logging/datalog.py}     & 376 & Binary frame writer, flush strategy, crash context \\
+\texttt{sensors/barometer.py}   & 238 & BMP180 I\textsuperscript{2}C driver, pipelined reads \\
+\texttt{flight/state\_machine.py} & 172 & Seven-state FSM, false-launch recovery \\
+\texttt{flight/kalman.py}       & 127 & 1D Kalman filter \\
+\texttt{utils/hardware.py}      & 110 & LED blink patterns via hardware timer \\
+\texttt{config.py}              & 102 & Pin assignments, thresholds, tuning constants \\
+\texttt{logging/sdcard\_mount.py} & 92 & SD card SPI mount with retry logic \\
+\texttt{sensors/power.py}       & 62  & Three-rail ADC voltage monitoring \\
+\midrule
+\textbf{Total}                  & \textbf{1,843} & \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ── Section 2 ─────────────────────────────────────────
+\section{Development and Iteration}
+
+The system went through three major revisions, each driven by real problems encountered during testing and ground runs.
+
+\subsection{Version History}
+
+\textbf{V1} (28-byte frames, \SI{25}{\hertz}) established the core architecture: barometer reads, Kalman filtering, state detection, and SD logging. It proved the concept worked but provided only a single battery voltage channel and no insight into system health during flight.
+
+\textbf{V2} (32-byte frames, \SI{25}{\hertz}) added independent monitoring of all three voltage rails (\SI{3.3}{\volt}, \SI{5}{\volt}, \SI{9}{\volt}). This immediately revealed that the \SI{9}{\volt} rail dipped during SD card flushes---a correlation between power behaviour and system events that was only visible because the data shared a time-synchronised log.
+
+\textbf{V3} (40-byte frames, \SI{50}{\hertz}) was the most significant revision. The sample rate doubled. Six diagnostic fields were added: frame execution time, SD flush duration, free heap memory, CPU temperature, I\textsuperscript{2}C error count, and loop overrun count. More importantly, V3 introduced crash recovery using the RP2040's watchdog scratch registers---hardware registers that survive a reset. Before every flush, the firmware writes the current frame count and timestamp into these registers. On a watchdog reset, the system reboots, reads the scratch context, writes a crash report, and resumes logging within approximately \SI{0.5}{\second}.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Binary frame format evolution.}
+\label{tab:versions}
+\begin{tabular}{l c c c c}
+\toprule
+\textbf{Attribute} & \textbf{V1} & \textbf{V2} & \textbf{V3} \\
+\midrule
+Frame size       & 28\,B  & 32\,B  & 40\,B  \\
+Sample rate      & \SI{25}{\hertz} & \SI{25}{\hertz} & \SI{50}{\hertz} \\
+Throughput       & \SI{700}{\byte\per\second} & \SI{800}{\byte\per\second} & \SI{2000}{\byte\per\second} \\
+Voltage rails    & 1 (battery) & 3 (3.3/5/9\,V) & 3 (3.3/5/9\,V) \\
+Diagnostics      & None   & None   & 6 fields \\
+Crash recovery   & No     & No     & Yes \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Diagnostic and Benchmarking Suite}
+
+An eight-test diagnostic suite runs directly on the Pico over USB, exercising every subsystem in isolation (Table~\ref{tab:diag}). The pipelined barometer reads, pre-allocated write buffers, and tuned flush intervals were all direct products of this benchmarking cycle.
+
+\figTimingBudget
+
+\begin{table}[h]
+\centering
+\small
+\caption{On-device diagnostic tests.}
+\label{tab:diag}
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Test} & \textbf{What it measures} \\
+\midrule
+Sensor Bench    & 1,000 barometer reads---I\textsuperscript{2}C latency distribution and pressure noise floor \\
+SD Card Bench   & 5 min sustained writes at flight rate---per-frame and flush latency \\
+Loop Budget     & Per-stage timing breakdown of the full pipeline against the frame budget \\
+RAM Profile     & Memory cost of each avionics object plus 1,000-frame leak detection \\
+Float Precision & 10,000 Kalman iterations checking for numerical drift and covariance health \\
+Dual-Core Stress & Jitter measurement with and without the LED timer callback active \\
+Endurance Run   & 10 min continuous pipeline---timing drift, memory trends, thermal behaviour \\
+Error Injection & Bad I\textsuperscript{2}C addresses, mid-write SD removal, extreme filter inputs \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Ground Station Tooling}
+
+Each firmware version expanded the laptop-side tooling (approximately 8,500 lines of Python). A \textbf{preflight TUI} connects over USB and walks through each subsystem with a GO/NO-GO assessment. A \textbf{postflight TUI} downloads and decodes binary logs, presenting flight metrics and all diagnostic channels. A \textbf{state reprocessor} replays recorded data through an offline state machine with tuneable thresholds, producing side-by-side comparisons of what the firmware decided versus what alternative parameters would have produced. A \textbf{flight simulator} generates predicted altitude and velocity profiles from rocket parameters and motor thrust curves for overlay against actual flight data.
+
+% ── Section 3 ─────────────────────────────────────────
+\section{Reliability Considerations}
+
+Every design decision was shaped by one question: what happens when something goes wrong at \SI{3000}{ft}?
+
+\subsection{Preflight Verification}
+
+Every boot runs a seven-step preflight sequence:
+
+\begin{enumerate}
+    \item Overclock CPU to \SI{200}{\mega\hertz}
+    \item Initialise LED status feedback
+    \item Mount SD card with up to 3 retries
+    \item Verify barometer: chip ID, calibration coefficients, live reading
+    \item Check three voltage rails against specification thresholds
+    \item Calibrate ground-level pressure baseline from 50 averaged samples
+    \item Initialise logger and write preflight metadata
+\end{enumerate}
+
+If the SD card or barometer fails, the system halts with a solid LED indication. It will not proceed to flight mode without functional storage and sensing.
+
+\subsection{In-Flight Graceful Degradation}
+
+\textbf{SD card failure.} If the SD card fails mid-flight, the sensor loop continues running. Every five seconds the system attempts recovery by opening a new file in a new folder; data already written to the previous file is preserved.
+
+\textbf{Frame synchronisation.} Each frame is preceded by a \texttt{0xAA\,0x55} sync header. The post-flight decoder uses these to resync after corrupted or partial writes caused by power loss.
+
+\textbf{I\textsuperscript{2}C bus errors.} Errors are caught, counted (logged in each frame's diagnostic fields), but do not crash the loop. The sensor read is skipped for that frame and the loop continues.
+
+\textbf{Watchdog recovery.} The hardware watchdog is set to a \SI{5}{\second} timeout. It is fed at every safe point: during SD flushes, barometer waits, and each loop iteration. A genuine hang triggers a fast reboot. The firmware detects the reset cause, reads the crash context from the scratch registers, writes a crash report to the SD card, and resumes logging with a shortened ground calibration (10~samples instead of~50).
+
+\subsection{Post-Flight Validation Loop}
+
+The state reprocessor closes the feedback loop between flights. It replays altitude and velocity data through an offline state machine, allowing thresholds to be tuned against real flight data without re-flying. The flight simulator provides a second validation axis: overlaying predicted versus actual profiles highlights where the aerodynamic model diverges from reality, informing both software threshold adjustments and physical rocket design changes.
+
+\subsection{Diagnostic Telemetry as a Design Principle}
+
+Six of every frame's 40 bytes are dedicated to system health: frame execution time, flush duration, free heap, CPU temperature, I\textsuperscript{2}C errors, and loop overruns. This means the flight log \textit{is} the diagnostic tool. Any performance anomaly that occurs in flight---a slow SD write, a bus stall, a memory pressure spike---appears in the same time-synchronised data stream as the science data. This was a deliberate architectural choice: rather than adding a separate diagnostic mode, the system monitors itself continuously at zero additional runtime cost.
+
+\vspace{1em}
+\hrule
+\vspace{0.5em}
+\begin{center}
+\small\textit{Built for UNSW Rocketry --- targeting the Australian Universities Rocketry Challenge 2026.}
+\end{center}
+
+\end{document}
